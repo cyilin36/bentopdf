@@ -2,15 +2,7 @@ import { showLoader, hideLoader, showAlert } from '../ui.js';
 import { downloadFile, formatBytes } from '../utils/helpers.js';
 import { state } from '../state.js';
 import { createIcons, icons } from 'lucide';
-import fontkit from '@pdf-lib/fontkit';
 import ofdTextFontUrl from '../../../node_modules/@embedpdf/fonts-sc/fonts/NotoSansHans-Regular.otf?url';
-import {
-  PDFDocument,
-  rgb,
-  type PDFFont,
-  type PDFPage,
-  type RGB,
-} from 'pdf-lib';
 
 const FILETYPE = 'ofd';
 const EXTENSIONS = ['.ofd'];
@@ -29,8 +21,42 @@ type SelectableTextRun = {
   x: number;
   y: number;
   fontSize: number;
-  color: RGB;
+  color: string;
   targetWidth: number;
+};
+
+type PdfKitDocument = {
+  addPage: (options: { size: [number, number]; margin: number }) => void;
+  end: () => void;
+  fillColor: (color: string) => PdfKitDocument;
+  font: (font: string | Uint8Array) => PdfKitDocument;
+  fontSize: (size: number) => PdfKitDocument;
+  image: (
+    src: string,
+    x: number,
+    y: number,
+    options: { width: number; height: number }
+  ) => PdfKitDocument;
+  pipe: (stream: unknown) => unknown;
+  registerFont: (name: string, src: Uint8Array) => PdfKitDocument;
+  text: (
+    text: string,
+    x: number,
+    y: number,
+    options: { lineBreak: false }
+  ) => PdfKitDocument;
+  widthOfString: (text: string) => number;
+};
+
+type PdfKitConstructor = new (options: {
+  autoFirstPage: false;
+  compress: boolean;
+  margin: number;
+}) => PdfKitDocument;
+
+type BlobStream = {
+  on: (event: 'finish' | 'error', callback: (error?: Error) => void) => void;
+  toBlob: (type: string) => Blob;
 };
 
 type OfdToolsModule = {
@@ -355,10 +381,18 @@ const normalizeSvgPaint = (svg: SVGSVGElement) => {
   }
 };
 
-const rasterizeInlineSvgs = async (page: HTMLElement) => {
+const rasterizeInlineSvgs = async (
+  page: HTMLElement,
+  options: { removeTextSvgs?: boolean } = {}
+) => {
   const svgs = Array.from(page.querySelectorAll('svg'));
 
   for (const svg of svgs) {
+    if (options.removeTextSvgs && svg.querySelector('text')) {
+      svg.remove();
+      continue;
+    }
+
     const rect = svg.getBoundingClientRect();
     const width = Math.ceil(rect.width || parseFloat(svg.style.width) || 1);
     const height = Math.ceil(rect.height || parseFloat(svg.style.height) || 1);
@@ -385,37 +419,35 @@ const rasterizeInlineSvgs = async (page: HTMLElement) => {
   }
 };
 
-const parseCssColorToRgb = (value: string | null): RGB => {
-  if (!value || value === 'null' || value === 'undefined') return rgb(0, 0, 0);
+const parseCssColorToHex = (value: string | null) => {
+  if (!value || value === 'null' || value === 'undefined') return '#000000';
 
   const rgbMatch = value.match(
     /rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/
   );
   if (rgbMatch) {
-    return rgb(
-      Number(rgbMatch[1]) / 255,
-      Number(rgbMatch[2]) / 255,
-      Number(rgbMatch[3]) / 255
-    );
+    return `#${[rgbMatch[1], rgbMatch[2], rgbMatch[3]]
+      .map((part) =>
+        Math.max(0, Math.min(255, Math.round(Number(part))))
+          .toString(16)
+          .padStart(2, '0')
+      )
+      .join('')}`;
   }
 
   const hexMatch = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
   if (hexMatch) {
-    const hex =
+    return `#${
       hexMatch[1].length === 3
         ? hexMatch[1]
             .split('')
             .map((char) => char + char)
             .join('')
-        : hexMatch[1];
-    return rgb(
-      parseInt(hex.slice(0, 2), 16) / 255,
-      parseInt(hex.slice(2, 4), 16) / 255,
-      parseInt(hex.slice(4, 6), 16) / 255
-    );
+        : hexMatch[1]
+    }`;
   }
 
-  return rgb(0, 0, 0);
+  return '#000000';
 };
 
 const extractSelectableTextRuns = (
@@ -459,29 +491,29 @@ const extractSelectableTextRuns = (
       return {
         text,
         x: xPx * scaleX,
-        y: pdfPageSize.height - baselineYPx * scaleY,
+        y: Math.max(0, (baselineYPx - fontSizePx * 0.82) * scaleY),
         fontSize: fontSizePx * scaleY,
-        color: parseCssColorToRgb(fill),
+        color: parseCssColorToHex(fill),
         targetWidth: targetWidthPx * scaleX,
       };
     })
     .filter((run): run is SelectableTextRun => Boolean(run));
 };
 
-const loadPdfTextFont = async (pdfDoc: PDFDocument) => {
-  pdfDoc.registerFontkit(fontkit);
+const loadPdfTextFont = async () => {
   const fontResponse = await fetch(ofdTextFontUrl);
   if (!fontResponse.ok) {
     throw new Error('Unable to load OFD PDF text font.');
   }
 
-  return pdfDoc.embedFont(await fontResponse.arrayBuffer(), { subset: true });
+  return new Uint8Array(await fontResponse.arrayBuffer());
 };
 
-const fitTextFontSize = (font: PDFFont, run: SelectableTextRun) => {
+const fitTextFontSize = (doc: PdfKitDocument, run: SelectableTextRun) => {
   if (run.targetWidth <= 0) return run.fontSize;
 
-  const renderedWidth = font.widthOfTextAtSize(run.text, run.fontSize);
+  doc.fontSize(run.fontSize);
+  const renderedWidth = doc.widthOfString(run.text);
   if (renderedWidth <= run.targetWidth || renderedWidth === 0) {
     return run.fontSize;
   }
@@ -490,37 +522,37 @@ const fitTextFontSize = (font: PDFFont, run: SelectableTextRun) => {
 };
 
 const drawSelectableTextRuns = (
-  pdfPage: PDFPage,
-  font: PDFFont,
+  doc: PdfKitDocument,
   textRuns: SelectableTextRun[]
 ) => {
   for (const run of textRuns) {
-    pdfPage.drawText(run.text, {
-      x: run.x,
-      y: run.y,
-      size: fitTextFontSize(font, run),
-      font,
-      color: run.color,
-      opacity: 0,
-    });
+    doc
+      .fillColor(run.color)
+      .fontSize(fitTextFontSize(doc, run))
+      .text(run.text, run.x, run.y, { lineBreak: false });
   }
 };
 
-const uint8ArrayToArrayBuffer = (bytes: Uint8Array) =>
-  bytes.buffer.slice(
-    bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
-  ) as ArrayBuffer;
+const loadPdfKit = async () => {
+  const [pdfKitModule, blobStreamModule] = await Promise.all([
+    import('pdfkit/js/pdfkit.standalone.js'),
+    import('blob-stream'),
+  ]);
+
+  return {
+    PDFDocument: pdfKitModule.default as PdfKitConstructor,
+    blobStream: blobStreamModule.default as () => BlobStream,
+  };
+};
 
 const addRenderedPageToPdf = async (
-  pdfDoc: PDFDocument,
-  textFont: PDFFont,
+  pdfDoc: PdfKitDocument,
   page: HTMLElement,
   pdfPageSize: PdfPageSize,
   html2canvas: typeof import('html2canvas').default
 ) => {
   const textRuns = extractSelectableTextRuns(page, pdfPageSize);
-  await rasterizeInlineSvgs(page);
+  await rasterizeInlineSvgs(page, { removeTextSvgs: true });
   await waitForRenderAssets(page);
 
   const canvas = await html2canvas(page, {
@@ -529,15 +561,42 @@ const addRenderedPageToPdf = async (
     allowTaint: true,
     backgroundColor: '#ffffff',
   });
-  const pdfPage = pdfDoc.addPage([pdfPageSize.width, pdfPageSize.height]);
-  const pageImage = await pdfDoc.embedPng(canvas.toDataURL('image/png'));
-  pdfPage.drawImage(pageImage, {
-    x: 0,
-    y: 0,
+  pdfDoc.addPage({
+    size: [pdfPageSize.width, pdfPageSize.height],
+    margin: 0,
+  });
+  pdfDoc.image(canvas.toDataURL('image/png'), 0, 0, {
     width: pdfPageSize.width,
     height: pdfPageSize.height,
   });
-  drawSelectableTextRuns(pdfPage, textFont, textRuns);
+  pdfDoc.font('ofd-text');
+  drawSelectableTextRuns(pdfDoc, textRuns);
+};
+
+const finishPdfKitDocument = (doc: PdfKitDocument, stream: BlobStream) =>
+  new Promise<Blob>((resolve, reject) => {
+    stream.on('finish', () => resolve(stream.toBlob('application/pdf')));
+    stream.on('error', (error?: Error) =>
+      reject(error ?? new Error('Unable to generate PDF.'))
+    );
+    doc.end();
+  });
+
+const blobToArrayBuffer = (blob: Blob) => blob.arrayBuffer();
+
+const createPdfKitDocument = (
+  PDFDocument: PdfKitConstructor,
+  blobStream: () => BlobStream,
+  fontBytes: Uint8Array
+) => {
+  const doc = new PDFDocument({
+    autoFirstPage: false,
+    compress: true,
+    margin: 0,
+  });
+  const stream = doc.pipe(blobStream()) as BlobStream;
+  doc.registerFont('ofd-text', fontBytes);
+  return { doc, stream };
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -633,6 +692,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       try {
         const html2canvas = (await import('html2canvas')).default;
+        const { PDFDocument, blobStream } = await loadPdfKit();
+        const fontBytes = await loadPdfTextFont();
 
         if (state.files.length === 1) {
           const file = state.files[0];
@@ -649,8 +710,11 @@ document.addEventListener('DOMContentLoaded', () => {
           container.innerHTML = '';
           container.appendChild(pages[0]);
           await waitForRenderAssets(pages[0]);
-          const pdfDoc = await PDFDocument.create();
-          const textFont = await loadPdfTextFont(pdfDoc);
+          const { doc: pdfDoc, stream: pdfStream } = createPdfKitDocument(
+            PDFDocument,
+            blobStream,
+            fontBytes
+          );
 
           for (let i = 0; i < pages.length; i++) {
             const page = pages[i];
@@ -662,20 +726,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             showLoader(`Rendering page ${i + 1} of ${pages.length}...`);
-            await addRenderedPageToPdf(
-              pdfDoc,
-              textFont,
-              page,
-              pdfPageSize,
-              html2canvas
-            );
+            await addRenderedPageToPdf(pdfDoc, page, pdfPageSize, html2canvas);
           }
 
           showLoader('Generating PDF...');
-          const pdfBytes = await pdfDoc.save();
-          const pdfBlob = new Blob([uint8ArrayToArrayBuffer(pdfBytes)], {
-            type: 'application/pdf',
-          });
+          const pdfBlob = await finishPdfKitDocument(pdfDoc, pdfStream);
           const fileName = file.name.replace(/\.[^.]+$/, '') + '.pdf';
           downloadFile(pdfBlob, fileName);
 
@@ -706,8 +761,11 @@ document.addEventListener('DOMContentLoaded', () => {
             container.innerHTML = '';
             container.appendChild(pages[0]);
             await waitForRenderAssets(pages[0]);
-            const pdfDoc = await PDFDocument.create();
-            const textFont = await loadPdfTextFont(pdfDoc);
+            const { doc: pdfDoc, stream: pdfStream } = createPdfKitDocument(
+              PDFDocument,
+              blobStream,
+              fontBytes
+            );
 
             for (let i = 0; i < pages.length; i++) {
               const page = pages[i];
@@ -720,7 +778,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
               await addRenderedPageToPdf(
                 pdfDoc,
-                textFont,
                 page,
                 pdfPageSize,
                 html2canvas
@@ -728,7 +785,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const baseName = file.name.replace(/\.[^.]+$/, '');
-            const pdfOutput = await pdfDoc.save();
+            const pdfOutput = await blobToArrayBuffer(
+              await finishPdfKitDocument(pdfDoc, pdfStream)
+            );
             zip.file(`${baseName}.pdf`, pdfOutput);
           }
 
