@@ -388,6 +388,13 @@ const baseCategories = [
         subtitle: 'Convert OpenDocument Presentation (ODP) to PDF.',
       },
       {
+        href: import.meta.env.BASE_URL + 'ofd-to-pdf.html',
+        name: 'OFD to PDF',
+        icon: 'ph-file-text',
+        subtitle:
+          'Convert OFD (Open Fixed-layout Document) files to PDF.',
+      },
+      {
         href: import.meta.env.BASE_URL + 'pub-to-pdf.html',
         name: 'PUB to PDF',
         icon: 'ph-book-open',

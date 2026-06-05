@@ -1151,5 +1151,11 @@
     "faqSinglePageAnswer": "Ja! Schakel de optie \"Herhalen\" in en de overlay-pagina's worden herhaald over alle basispagina's. Een watermerk van één pagina wordt op elke pagina toegepast.",
     "faqPrivacyQuestion": "Zijn mijn bestanden privé en veilig?",
     "faqPrivacyAnswer": "Absoluut! Alle verwerking vindt plaats in jouw browser. Jouw bestanden verlaten nooit jouw apparaat, wat volledige privacy garandeert."
+  },
+  "ofdToPdf": {
+    "name": "OFD to PDF",
+    "subtitle": "Convert OFD (Open Fixed-layout Document) files to PDF format.",
+    "acceptedFormats": "OFD files",
+    "convertButton": "Convert to PDF"
   }
 }

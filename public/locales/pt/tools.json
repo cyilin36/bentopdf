@@ -1151,5 +1151,11 @@
     "faqSinglePageAnswer": "Sim! Ative a opção \"Repetir\" e as páginas de sobreposição se repetirão em todas as páginas base. Uma marca d'água de uma página será aplicada a cada página.",
     "faqPrivacyQuestion": "Os meus ficheiros são privados e seguros?",
     "faqPrivacyAnswer": "Com certeza! Todo o processamento acontece no seu navegador. Os seus ficheiros nunca saem do seu dispositivo, garantindo total privacidade."
+  },
+  "ofdToPdf": {
+    "name": "OFD to PDF",
+    "subtitle": "Convert OFD (Open Fixed-layout Document) files to PDF format.",
+    "acceptedFormats": "OFD files",
+    "convertButton": "Convert to PDF"
   }
 }

@@ -1151,5 +1151,11 @@
     "faqSinglePageAnswer": "نعم! فعّل خيار \"التكرار\" وستتكرر صفحات التراكب على جميع صفحات الملف الأساسي. العلامة المائية ذات الصفحة الواحدة ستُطبق على كل صفحة.",
     "faqPrivacyQuestion": "هل ملفاتي خاصة وآمنة؟",
     "faqPrivacyAnswer": "بالتأكيد! تتم جميع المعالجة في متصفحك. لا تغادر ملفاتك جهازك أبداً، مما يضمن خصوصية كاملة."
+  },
+  "ofdToPdf": {
+    "name": "OFD to PDF",
+    "subtitle": "Convert OFD (Open Fixed-layout Document) files to PDF format.",
+    "acceptedFormats": "OFD files",
+    "convertButton": "Convert to PDF"
   }
 }

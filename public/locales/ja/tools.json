@@ -1151,5 +1151,11 @@
     "faqSinglePageAnswer": "はい！ 「ループ」オプションを有効にすると、オーバーレイPDFページがすべてのベース ページにわたって繰り返されます。単一ページのウォーターマークはすべてのページに適用されます。",
     "faqPrivacyQuestion": "私のファイルは非公開で安全ですか？",
     "faqPrivacyAnswer": "絶対に！すべての処理はブラウザ内で行われます。ファイルがデバイスの外に出ることはなく、完全なプライバシーが確保されます。"
+  },
+  "ofdToPdf": {
+    "name": "OFD to PDF",
+    "subtitle": "Convert OFD (Open Fixed-layout Document) files to PDF format.",
+    "acceptedFormats": "OFD files",
+    "convertButton": "Convert to PDF"
   }
 }
