@@ -731,6 +731,7 @@ export default defineConfig(() => {
           'odg-to-pdf': resolve(__dirname, 'src/pages/odg-to-pdf.html'),
           'ods-to-pdf': resolve(__dirname, 'src/pages/ods-to-pdf.html'),
           'odp-to-pdf': resolve(__dirname, 'src/pages/odp-to-pdf.html'),
+          'ofd-to-pdf': resolve(__dirname, 'src/pages/ofd-to-pdf.html'),
           'pub-to-pdf': resolve(__dirname, 'src/pages/pub-to-pdf.html'),
           'vsd-to-pdf': resolve(__dirname, 'src/pages/vsd-to-pdf.html'),
           'psd-to-pdf': resolve(__dirname, 'src/pages/psd-to-pdf.html'),
