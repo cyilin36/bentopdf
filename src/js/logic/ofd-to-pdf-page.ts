@@ -21,6 +21,7 @@ type SelectableTextRun = {
   x: number;
   y: number;
   fontSize: number;
+  fontName: string;
   color: string;
   targetWidth: number;
 };
@@ -450,6 +451,13 @@ const parseCssColorToHex = (value: string | null) => {
   return '#000000';
 };
 
+const getPdfRunFontName = (fontFamily: string, text: string) => {
+  if (/[^\x00-\x7F]/.test(text)) return 'ofd-text';
+  if (/courier/i.test(fontFamily)) return 'Courier';
+  if (/times/i.test(fontFamily)) return 'Times-Roman';
+  return 'Helvetica';
+};
+
 const extractSelectableTextRuns = (
   page: HTMLElement,
   pdfPageSize: PdfPageSize
@@ -493,6 +501,7 @@ const extractSelectableTextRuns = (
         x: xPx * scaleX,
         y: Math.max(0, (baselineYPx - fontSizePx * 0.82) * scaleY),
         fontSize: fontSizePx * scaleY,
+        fontName: getPdfRunFontName(computedStyle.fontFamily, text),
         color: parseCssColorToHex(fill),
         targetWidth: targetWidthPx * scaleX,
       };
@@ -512,6 +521,7 @@ const loadPdfTextFont = async () => {
 const fitTextFontSize = (doc: PdfKitDocument, run: SelectableTextRun) => {
   if (run.targetWidth <= 0) return run.fontSize;
 
+  doc.font(run.fontName);
   doc.fontSize(run.fontSize);
   const renderedWidth = doc.widthOfString(run.text);
   if (renderedWidth <= run.targetWidth || renderedWidth === 0) {
@@ -527,6 +537,7 @@ const drawSelectableTextRuns = (
 ) => {
   for (const run of textRuns) {
     doc
+      .font(run.fontName)
       .fillColor(run.color)
       .fontSize(fitTextFontSize(doc, run))
       .text(run.text, run.x, run.y, { lineBreak: false });
