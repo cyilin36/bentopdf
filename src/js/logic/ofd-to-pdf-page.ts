@@ -2,44 +2,115 @@ import { showLoader, hideLoader, showAlert } from '../ui.js';
 import { downloadFile, formatBytes } from '../utils/helpers.js';
 import { state } from '../state.js';
 import { createIcons, icons } from 'lucide';
-import ofdTextFontUrl from '../../../node_modules/@embedpdf/fonts-sc/fonts/NotoSansHans-Regular.otf?url';
+import ofdTextFontBoldUrl from '../../../node_modules/@embedpdf/fonts-sc/fonts/NotoSansHans-Bold.otf?url';
+import ofdTextFontLightUrl from '../../../node_modules/@embedpdf/fonts-sc/fonts/NotoSansHans-Light.otf?url';
+import ofdTextFontRegularUrl from '../../../node_modules/@embedpdf/fonts-sc/fonts/NotoSansHans-Regular.otf?url';
 
-const FILETYPE = 'ofd';
 const EXTENSIONS = ['.ofd'];
-const TOOL_NAME = 'OFD';
-const RENDER_WIDTH = 796;
-const POINTS_PER_INCH = 72;
-const MILLIMETERS_PER_INCH = 25.4;
+const MM_TO_PT = 72 / 25.4;
+const DEFAULT_PAGE_BOX: OfdBox = { x: 0, y: 0, width: 210, height: 297 };
 
-type PdfPageSize = {
+type OfdBox = {
+  x: number;
+  y: number;
   width: number;
   height: number;
 };
 
-type SelectableTextRun = {
+type OfdColor = {
+  r: number;
+  g: number;
+  b: number;
+  alpha: number;
+};
+
+type DrawParam = {
+  id: string;
+  relative?: string;
+  lineWidth?: number;
+  fillColor?: OfdColor;
+  strokeColor?: OfdColor;
+};
+
+type FontDef = {
+  id: string;
+  name: string;
+  family: string;
+};
+
+type MediaDef = {
+  id: string;
+  path: string;
+  format: string;
+};
+
+type TemplateDef = {
+  id: string;
+  path: string;
+  zOrder: string;
+};
+
+type PageDef = {
+  id: string;
+  path: string;
+};
+
+type OfdDocument = {
+  zip: any;
+  docDir: string;
+  pageBox: OfdBox;
+  drawParams: Map<string, DrawParam>;
+  fonts: Map<string, FontDef>;
+  media: Map<string, MediaDef>;
+  pages: PageDef[];
+  templates: Map<string, TemplateDef>;
+};
+
+type TextCode = {
   text: string;
   x: number;
   y: number;
-  fontSize: number;
-  fontName: string;
-  color: string;
-  targetWidth: number;
+  deltaX: number[];
 };
 
 type PdfKitDocument = {
   addPage: (options: { size: [number, number]; margin: number }) => void;
+  bezierCurveTo: (
+    cp1x: number,
+    cp1y: number,
+    cp2x: number,
+    cp2y: number,
+    x: number,
+    y: number
+  ) => PdfKitDocument;
+  closePath: () => PdfKitDocument;
   end: () => void;
+  fill: () => PdfKitDocument;
   fillColor: (color: string) => PdfKitDocument;
   font: (font: string | Uint8Array) => PdfKitDocument;
   fontSize: (size: number) => PdfKitDocument;
   image: (
-    src: string,
+    src: string | Uint8Array,
     x: number,
     y: number,
     options: { width: number; height: number }
   ) => PdfKitDocument;
+  lineTo: (x: number, y: number) => PdfKitDocument;
+  lineWidth: (width: number) => PdfKitDocument;
+  moveTo: (x: number, y: number) => PdfKitDocument;
+  opacity: (opacity: number) => PdfKitDocument;
   pipe: (stream: unknown) => unknown;
+  quadraticCurveTo: (
+    cpx: number,
+    cpy: number,
+    x: number,
+    y: number
+  ) => PdfKitDocument;
   registerFont: (name: string, src: Uint8Array) => PdfKitDocument;
+  restore: () => PdfKitDocument;
+  save: () => PdfKitDocument;
+  stroke: () => PdfKitDocument;
+  strokeColor: (color: string) => PdfKitDocument;
   text: (
     text: string,
     x: number,
@@ -60,457 +131,527 @@ type BlobStream = {
   toBlob: (type: string) => Blob;
 };
 
-type OfdToolsModule = {
-  parseOfdDocument: (options: {
-    ofd: File | ArrayBuffer | string;
-    success?: (res: any[]) => void;
-    fail?: (e: unknown) => void;
-  }) => void;
-  renderOfd: (screenWidth: number, ofd: any) => HTMLDivElement[];
+type OfdPdfFonts = {
+  bold: Uint8Array;
+  light: Uint8Array;
+  regular: Uint8Array;
 };
 
-type BrowserRequireGlobal = {
+type BrowserGlobalShim = typeof globalThis & {
   global?: typeof globalThis;
-  require?: (name: string) => unknown;
 };
 
-const installAsn1RequireShim = async () => {
-  const globalScope = globalThis as unknown as BrowserRequireGlobal;
-  globalScope.global = globalThis;
-  if (globalScope.require) return;
-
-  const [int10Module, oidsModule] = await Promise.all([
-    import('@lapo/asn1js/int10'),
-    import('@lapo/asn1js/oids'),
-  ]);
-  const modules: Record<string, unknown> = {
-    './int10': int10Module.default ?? int10Module,
-    './oids': oidsModule.default ?? oidsModule,
-  };
-
-  globalScope.require = (name: string) => {
-    if (Object.prototype.hasOwnProperty.call(modules, name)) {
-      return modules[name];
-    }
-    throw new Error(`Unsupported browser require: ${name}`);
-  };
+const installPdfBrowserShims = () => {
+  (globalThis as BrowserGlobalShim).global ??= globalThis;
 };
 
-const loadOfdTools = async (): Promise<OfdToolsModule> => {
-  await installAsn1RequireShim();
-  return (await import('ofd-tools')) as OfdToolsModule;
-};
-
-const removeSignatureReferences = (xml: string) => {
-  const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml');
-  if (xmlDocument.querySelector('parsererror')) return xml;
-
-  const signatureReferences = Array.from(
-    xmlDocument.getElementsByTagNameNS('*', 'Signatures')
-  );
-  if (signatureReferences.length === 0) return xml;
-
-  for (const reference of signatureReferences) {
-    reference.parentNode?.removeChild(reference);
+const parseXml = (xml: string) => {
+  const document = new DOMParser().parseFromString(xml, 'application/xml');
+  const parserError = document.querySelector('parsererror');
+  if (parserError) {
+    throw new Error(parserError.textContent?.trim() || 'Invalid OFD XML.');
   }
-
-  return new XMLSerializer().serializeToString(xmlDocument);
+  return document;
 };
 
-const getLocalNameElements = (element: Element | XMLDocument, name: string) =>
+const localName = (element: Element) => element.localName || element.nodeName;
+
+const directChildren = (element: Element | XMLDocument, name?: string) =>
+  Array.from(element.childNodes).filter(
+    (node): node is Element =>
+      node.nodeType === Node.ELEMENT_NODE &&
+      (!name || localName(node as Element) === name)
+  );
+
+const firstChild = (element: Element | XMLDocument, name: string) =>
+  directChildren(element, name)[0] ?? null;
+
+const textOf = (element: Element | XMLDocument, name: string) =>
+  firstChild(element, name)?.textContent?.trim() ?? '';
+
+const allElements = (element: Element | XMLDocument, name: string) =>
   Array.from(element.getElementsByTagNameNS('*', name));
 
-const resolveZipPath = (parts: string[]) =>
-  parts.filter(Boolean).join('/').replace(/\/+/g, '/').replace(/^\/+/, '');
+const firstTextIn = (element: Element | XMLDocument, name: string) =>
+  allElements(element, name)[0]?.textContent?.trim() ?? '';
 
-const resolveMediaPath = (
-  entryName: string,
-  mediaFile: string,
-  baseLoc: string | null
-) => {
-  const docRoot = entryName.split('/')[0] ?? '';
-  let filePath = mediaFile.replace(/^\/+/, '');
-  const normalizedBaseLoc = baseLoc?.replace(/^\/+|\/+$/g, '') ?? '';
+const normalizeZipPath = (path: string) =>
+  path.replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+/g, '/');
 
-  if (normalizedBaseLoc && !filePath.includes(normalizedBaseLoc)) {
-    filePath = resolveZipPath([normalizedBaseLoc, filePath]);
-  }
-
-  if (docRoot && !filePath.includes(docRoot)) {
-    filePath = resolveZipPath([docRoot, filePath]);
-  }
-
-  return filePath;
+const dirname = (path: string) => {
+  const normalized = normalizeZipPath(path);
+  const lastSlash = normalized.lastIndexOf('/');
+  return lastSlash >= 0 ? normalized.slice(0, lastSlash) : '';
 };
 
-const removeMissingMediaReferences = (
-  xml: string,
-  entryName: string,
-  zip: any
-) => {
-  const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml');
-  if (xmlDocument.querySelector('parsererror')) return xml;
+const joinZipPath = (...parts: Array<string | undefined | null>) =>
+  normalizeZipPath(parts.filter(Boolean).join('/'));
 
-  const mediaElements = getLocalNameElements(xmlDocument, 'MultiMedia');
-  if (mediaElements.length === 0) return xml;
+const resolveRelativePath = (baseDir: string, path: string) =>
+  normalizeZipPath(path.startsWith('/') ? path : joinZipPath(baseDir, path));
 
-  let changed = false;
-  for (const mediaElement of mediaElements) {
-    const mediaFileElement = getLocalNameElements(mediaElement, 'MediaFile')[0];
-    const mediaFile = mediaFileElement?.textContent?.trim();
-    const expectedPath = mediaFile
-      ? resolveMediaPath(
-          entryName,
-          mediaFile,
-          mediaElement.parentElement?.parentElement?.getAttribute('BaseLoc') ??
-            xmlDocument.documentElement.getAttribute('BaseLoc')
-        )
-      : '';
+const parseNumberList = (value: string | null | undefined) =>
+  (value ?? '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(Number)
+    .filter((number) => Number.isFinite(number));
 
-    if (!expectedPath || !zip.file(expectedPath)) {
-      mediaElement.parentNode?.removeChild(mediaElement);
-      changed = true;
-    }
-  }
-
-  return changed ? new XMLSerializer().serializeToString(xmlDocument) : xml;
+const parseBox = (value: string | null | undefined): OfdBox | null => {
+  const values = parseNumberList(value);
+  if (values.length < 4) return null;
+  return { x: values[0], y: values[1], width: values[2], height: values[3] };
 };
 
-const createRenderableOfdBuffer = async (file: File) => {
-  const originalBuffer = await file.arrayBuffer();
-  const JSZip = (await import('jszip')).default;
-  const zip = await JSZip.loadAsync(originalBuffer.slice(0));
-  let changed = false;
+const toPt = (mm: number) => mm * MM_TO_PT;
 
-  const ofdEntry = zip.file('OFD.xml');
-  if (ofdEntry) {
-    const ofdXml = await ofdEntry.async('string');
-    const renderableOfdXml = removeSignatureReferences(ofdXml);
-    if (renderableOfdXml !== ofdXml) {
-      zip.file('OFD.xml', renderableOfdXml);
-      changed = true;
-    }
-  }
+const colorToHex = (color: OfdColor) =>
+  `#${[color.r, color.g, color.b]
+    .map((value) =>
+      Math.max(0, Math.min(255, Math.round(value)))
+        .toString(16)
+        .padStart(2, '0')
+    )
+    .join('')}`;
 
-  const xmlEntries = Object.values(zip.files).filter(
-    (entry: any) => !entry.dir && entry.name.toLowerCase().endsWith('.xml')
-  ) as Array<{ name: string; async: (type: 'string') => Promise<string> }>;
-  for (const entry of xmlEntries) {
-    const xml = await entry.async('string');
-    const renderableXml = removeMissingMediaReferences(xml, entry.name, zip);
-    if (renderableXml !== xml) {
-      zip.file(entry.name, renderableXml);
-      changed = true;
-    }
-  }
-
-  return changed ? zip.generateAsync({ type: 'arraybuffer' }) : originalBuffer;
+const parseColorElement = (element: Element | null): OfdColor | undefined => {
+  if (!element) return undefined;
+  const values = parseNumberList(element.getAttribute('Value'));
+  if (values.length < 3) return undefined;
+  const alphaValue = element.getAttribute('Alpha');
+  const alpha =
+    alphaValue == null ? 1 : Math.max(0, Math.min(255, Number(alphaValue))) / 255;
+  return { r: values[0], g: values[1], b: values[2], alpha };
 };
 
-const parseOfdFile = async (
-  file: File,
-  parseOfdDocument: OfdToolsModule['parseOfdDocument']
-) => {
-  const ofdBuffer = await createRenderableOfdBuffer(file);
+const extractColor = (element: Element, name: 'FillColor' | 'StrokeColor') =>
+  parseColorElement(firstChild(element, name));
 
-  return new Promise<any>((resolve, reject) => {
-    parseOfdDocument({
-      ofd: ofdBuffer,
-      success(res: any[]) {
-        resolve(res[0]);
-      },
-      fail(e: unknown) {
-        reject(e instanceof Error ? e : new Error(String(e)));
-      },
+const parseDrawParams = (publicResXml: XMLDocument) => {
+  const drawParams = new Map<string, DrawParam>();
+
+  for (const element of allElements(publicResXml, 'DrawParam')) {
+    const id = element.getAttribute('ID');
+    if (!id) continue;
+
+    drawParams.set(id, {
+      id,
+      relative: element.getAttribute('Relative') ?? undefined,
+      lineWidth: Number(element.getAttribute('LineWidth')) || undefined,
+      fillColor: extractColor(element, 'FillColor'),
+      strokeColor: extractColor(element, 'StrokeColor'),
     });
-  });
-};
-
-const normalizeDrawParamInheritance = (ofdObj: any) => {
-  const drawParams = ofdObj?.drawParamResObj;
-  if (!drawParams || typeof drawParams !== 'object') return;
+  }
 
   const resolving = new Set<string>();
-  const resolveParam = (id: string): any => {
-    const param = drawParams[id];
-    if (!param || typeof param !== 'object' || resolving.has(id)) return param;
+  const resolve = (id: string): DrawParam | undefined => {
+    const current = drawParams.get(id);
+    if (!current || resolving.has(id)) return current;
 
     resolving.add(id);
-    const parentId = param.relative ?? param.Relative;
-    const parent = parentId ? resolveParam(String(parentId)) : null;
-    if (parent && typeof parent === 'object') {
-      for (const key of ['LineWidth', 'FillColor', 'StrokeColor']) {
-        if (!param[key] && parent[key]) {
-          param[key] = parent[key];
-        }
-      }
+    const parent = current.relative ? resolve(current.relative) : undefined;
+    if (parent) {
+      current.lineWidth ??= parent.lineWidth;
+      current.fillColor ??= parent.fillColor;
+      current.strokeColor ??= parent.strokeColor;
     }
     resolving.delete(id);
-
-    // ofd-tools switches to the parent DrawParam during rendering and then
-    // misses the child FillColor. Materialize inheritance before rendering.
-    delete param.relative;
-    delete param.Relative;
-    return param;
+    return current;
   };
 
-  for (const id of Object.keys(drawParams)) {
-    resolveParam(id);
-  }
+  for (const id of drawParams.keys()) resolve(id);
+  return drawParams;
 };
 
-const waitForRenderAssets = async (page: HTMLElement) => {
-  const images = Array.from(page.querySelectorAll('img'));
-  await Promise.all(
-    images.map((img) => {
-      if (img.complete) return Promise.resolve();
+const parseFonts = (publicResXml: XMLDocument) => {
+  const fonts = new Map<string, FontDef>();
+  for (const element of allElements(publicResXml, 'Font')) {
+    const id = element.getAttribute('ID');
+    if (!id) continue;
+    const name = element.getAttribute('FontName') ?? '';
+    fonts.set(id, {
+      id,
+      name,
+      family: element.getAttribute('FamilyName') ?? name,
+    });
+  }
+  return fonts;
+};
 
-      return new Promise<void>((resolve) => {
-        img.addEventListener('load', () => resolve(), { once: true });
-        img.addEventListener('error', () => resolve(), { once: true });
-      });
-    })
+const parseMedia = (documentResXml: XMLDocument, docDir: string) => {
+  const media = new Map<string, MediaDef>();
+  const baseLoc = documentResXml.documentElement.getAttribute('BaseLoc') ?? '';
+
+  for (const element of allElements(documentResXml, 'MultiMedia')) {
+    const id = element.getAttribute('ID');
+    const mediaFile = textOf(element, 'MediaFile');
+    if (!id || !mediaFile) continue;
+
+    media.set(id, {
+      id,
+      format: element.getAttribute('Format') ?? '',
+      path: resolveRelativePath(docDir, joinZipPath(baseLoc, mediaFile)),
+    });
+  }
+
+  return media;
+};
+
+const parseOfdPackage = async (file: File): Promise<OfdDocument> => {
+  const JSZip = (await import('jszip')).default;
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const ofdEntry = zip.file('OFD.xml');
+  if (!ofdEntry) throw new Error('OFD.xml was not found in this OFD file.');
+
+  const ofdXml = parseXml(await ofdEntry.async('string'));
+  const docRoot = normalizeZipPath(firstTextIn(ofdXml, 'DocRoot'));
+  if (!docRoot) throw new Error('OFD document root was not found.');
+
+  const documentEntry = zip.file(docRoot);
+  if (!documentEntry) throw new Error(`OFD document was not found: ${docRoot}`);
+
+  const documentXml = parseXml(await documentEntry.async('string'));
+  const docDir = dirname(docRoot);
+  const commonData = firstChild(documentXml.documentElement, 'CommonData');
+  const pageArea = commonData ? firstChild(commonData, 'PageArea') : null;
+  const pageBox =
+    parseBox(textOf(pageArea ?? documentXml, 'PhysicalBox')) ?? DEFAULT_PAGE_BOX;
+
+  const publicResPath = resolveRelativePath(
+    docDir,
+    commonData ? textOf(commonData, 'PublicRes') : ''
+  );
+  const documentResPath = resolveRelativePath(
+    docDir,
+    commonData ? textOf(commonData, 'DocumentRes') : ''
+  );
+  const publicResXml = parseXml(
+    await zip.file(publicResPath)?.async('string') ??
+      '<?xml version="1.0"?><ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"/>'
+  );
+  const documentResXml = parseXml(
+    await zip.file(documentResPath)?.async('string') ??
+      '<?xml version="1.0"?><ofd:Res xmlns:ofd="http://www.ofdspec.org/2016"/>'
   );
 
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-};
-
-const getElementSize = (element: HTMLElement) => {
-  const rect = element.getBoundingClientRect();
-  const width = Math.ceil(rect.width || element.offsetWidth || RENDER_WIDTH);
-  const height = Math.ceil(rect.height || element.offsetHeight || 1123);
-  return { width, height };
-};
-
-const parseBoxString = (box?: string) => {
-  const values = box?.trim().split(/\s+/).map(Number);
-  if (
-    !values ||
-    values.length < 4 ||
-    values.some((value) => Number.isNaN(value))
-  ) {
-    return null;
+  const templates = new Map<string, TemplateDef>();
+  for (const element of allElements(documentXml, 'TemplatePage')) {
+    const id = element.getAttribute('ID');
+    const baseLoc = element.getAttribute('BaseLoc');
+    if (!id || !baseLoc) continue;
+    templates.set(id, {
+      id,
+      path: resolveRelativePath(docDir, baseLoc),
+      zOrder: element.getAttribute('ZOrder') ?? 'Background',
+    });
   }
+
+  const pages: PageDef[] = allElements(documentXml, 'Page')
+    .map((element) => ({
+      id: element.getAttribute('ID') ?? '',
+      path: resolveRelativePath(docDir, element.getAttribute('BaseLoc') ?? ''),
+    }))
+    .filter((page) => page.id && page.path);
 
   return {
-    x: values[0],
-    y: values[1],
-    width: values[2],
-    height: values[3],
+    zip,
+    docDir,
+    pageBox,
+    drawParams: parseDrawParams(publicResXml),
+    fonts: parseFonts(publicResXml),
+    media: parseMedia(documentResXml, docDir),
+    pages,
+    templates,
   };
 };
 
-const getOfdPageBox = (ofdObj: any, page: any) => {
-  const pageId = Object.keys(page)[0];
-  const pageArea = page[pageId]?.json?.['ofd:Area'];
-  const documentArea = ofdObj?.document?.['ofd:CommonData']?.['ofd:PageArea'];
+const readXmlFromZip = async (ofd: OfdDocument, path: string) => {
+  const entry = ofd.zip.file(path);
+  if (!entry) throw new Error(`OFD page content was not found: ${path}`);
+  return parseXml(await entry.async('string'));
+};
 
+const parseTextCodes = (textObject: Element): TextCode[] =>
+  directChildren(textObject, 'TextCode')
+    .map((element) => ({
+      text: element.textContent ?? '',
+      x: Number(element.getAttribute('X')) || 0,
+      y: Number(element.getAttribute('Y')) || 0,
+      deltaX: parseNumberList(element.getAttribute('DeltaX')),
+    }))
+    .filter((code) => code.text.length > 0);
+
+const getEffectiveDrawParam = (
+  ofd: OfdDocument,
+  layer: Element,
+  object: Element
+) => {
+  const objectDrawParam = object.getAttribute('DrawParam');
+  const layerDrawParam = layer.getAttribute('DrawParam');
   return (
-    parseBoxString(pageArea?.['ofd:PhysicalBox']) ??
-    parseBoxString(pageArea?.['ofd:ApplicationBox']) ??
-    parseBoxString(pageArea?.['ofd:ContentBox']) ??
-    parseBoxString(documentArea?.['ofd:PhysicalBox']) ??
-    parseBoxString(documentArea?.['ofd:ApplicationBox']) ??
-    parseBoxString(documentArea?.['ofd:ContentBox'])
+    (objectDrawParam ? ofd.drawParams.get(objectDrawParam) : undefined) ??
+    (layerDrawParam ? ofd.drawParams.get(layerDrawParam) : undefined)
   );
 };
 
-const getPdfPageSize = (
-  ofdObj: any,
-  page: any,
-  fallbackElement: HTMLElement
+const getObjectFillColor = (
+  object: Element,
+  drawParam: DrawParam | undefined,
+  fallback: OfdColor
+) => extractColor(object, 'FillColor') ?? drawParam?.fillColor ?? fallback;
+
+const getObjectStrokeColor = (
+  object: Element,
+  drawParam: DrawParam | undefined,
+  fallback: OfdColor
+) => extractColor(object, 'StrokeColor') ?? drawParam?.strokeColor ?? fallback;
+
+const tokenizePath = (data: string) =>
+  data.match(/[MLCQAZ]|-?\d+(?:\.\d+)?(?:e[-+]?\d+)?/gi) ?? [];
+
+const parsePathNumber = (tokens: string[], index: number) =>
+  Number(tokens[index] ?? 0) || 0;
+
+const drawPathObject = (
+  doc: PdfKitDocument,
+  ofd: OfdDocument,
+  layer: Element,
+  object: Element
 ) => {
-  const ofdBox = getOfdPageBox(ofdObj, page);
-  if (ofdBox) {
-    return {
-      width: (ofdBox.width * POINTS_PER_INCH) / MILLIMETERS_PER_INCH,
-      height: (ofdBox.height * POINTS_PER_INCH) / MILLIMETERS_PER_INCH,
-    };
+  const box = parseBox(object.getAttribute('Boundary'));
+  const abbreviatedData = textOf(object, 'AbbreviatedData');
+  if (!box || !abbreviatedData) return;
+
+  const drawParam = getEffectiveDrawParam(ofd, layer, object);
+  const strokeColor = getObjectStrokeColor(object, drawParam, {
+    r: 0,
+    g: 0,
+    b: 0,
+    alpha: 1,
+  });
+  const fillColor = extractColor(object, 'FillColor');
+  const tokens = tokenizePath(abbreviatedData);
+  let index = 0;
+
+  doc
+    .save()
+    .opacity(strokeColor.alpha)
+    .strokeColor(colorToHex(strokeColor))
+    .lineWidth(toPt(drawParam?.lineWidth ?? 0.25));
+  if (fillColor) doc.fillColor(colorToHex(fillColor));
+
+  while (index < tokens.length) {
+    const command = tokens[index++].toUpperCase();
+    if (command === 'M') {
+      const x = parsePathNumber(tokens, index);
+      const y = parsePathNumber(tokens, index + 1);
+      index += 2;
+      doc.moveTo(toPt(box.x + x), toPt(box.y + y));
+    } else if (command === 'L') {
+      const x = parsePathNumber(tokens, index);
+      const y = parsePathNumber(tokens, index + 1);
+      index += 2;
+      doc.lineTo(toPt(box.x + x), toPt(box.y + y));
+    } else if (command === 'C') {
+      const cp1x = parsePathNumber(tokens, index);
+      const cp1y = parsePathNumber(tokens, index + 1);
+      const cp2x = parsePathNumber(tokens, index + 2);
+      const cp2y = parsePathNumber(tokens, index + 3);
+      const x = parsePathNumber(tokens, index + 4);
+      const y = parsePathNumber(tokens, index + 5);
+      index += 6;
+      doc.bezierCurveTo(
+        toPt(box.x + cp1x),
+        toPt(box.y + cp1y),
+        toPt(box.x + cp2x),
+        toPt(box.y + cp2y),
+        toPt(box.x + x),
+        toPt(box.y + y)
+      );
+    } else if (command === 'Q') {
+      const cpx = parsePathNumber(tokens, index);
+      const cpy = parsePathNumber(tokens, index + 1);
+      const x = parsePathNumber(tokens, index + 2);
+      const y = parsePathNumber(tokens, index + 3);
+      index += 4;
+      doc.quadraticCurveTo(
+        toPt(box.x + cpx),
+        toPt(box.y + cpy),
+        toPt(box.x + x),
+        toPt(box.y + y)
+      );
+    } else if (command === 'Z') {
+      doc.closePath();
+    }
   }
 
-  return getElementSize(fallbackElement);
+  if (fillColor && !strokeColor) {
+    doc.fill();
+  } else {
+    doc.stroke();
+  }
+  doc.restore();
 };
 
-const getPdfOrientation = (size: { width: number; height: number }) =>
-  size.width > size.height ? 'landscape' : 'portrait';
+const fontNameForObject = (font: FontDef | undefined) => {
+  const family = `${font?.name ?? ''} ${font?.family ?? ''}`;
+  if (/courier/i.test(family)) return 'Courier';
+  if (/times/i.test(family)) return 'Times-Roman';
+  if (/黑体|simhei|hei/i.test(family)) return 'ofd-text-bold';
+  if (/楷体|kaiti|kai/i.test(family)) return 'ofd-text';
+  return 'ofd-text-light';
+};
 
-const rasterizeSvgToPng = (svg: SVGSVGElement, width: number, height: number) =>
-  new Promise<string>((resolve, reject) => {
-    const serializedSvg = new XMLSerializer().serializeToString(svg);
-    const image = new Image();
-    const scale = 2;
+const fallbackAdvance = (char: string, size: number) =>
+  /[^\x00-\x7F]/.test(char) ? size : size * 0.5;
 
-    image.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.ceil(width * scale));
-      canvas.height = Math.max(1, Math.ceil(height * scale));
-      const context = canvas.getContext('2d');
-      if (!context) {
-        reject(new Error('Unable to create SVG rasterization context.'));
-        return;
-      }
+const drawTextCode = (
+  doc: PdfKitDocument,
+  code: TextCode,
+  box: OfdBox,
+  size: number,
+  fontName: string
+) => {
+  const chars = Array.from(code.text);
+  let currentX = code.x;
+  const y = toPt(box.y + code.y - size * 0.82);
 
-      context.scale(scale, scale);
-      context.drawImage(image, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/png'));
-    };
-    image.onerror = () => reject(new Error('Unable to rasterize SVG layer.'));
-    image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
-      serializedSvg
-    )}`;
+  doc.font(fontName).fontSize(toPt(size));
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i];
+    doc.text(char, toPt(box.x + currentX), y, { lineBreak: false });
+    currentX += code.deltaX[i] ?? fallbackAdvance(char, size);
+  }
+};
+
+const drawTextObject = (
+  doc: PdfKitDocument,
+  ofd: OfdDocument,
+  layer: Element,
+  object: Element
+) => {
+  const box = parseBox(object.getAttribute('Boundary'));
+  if (!box) return;
+
+  const fontId = object.getAttribute('Font') ?? '';
+  const size = Number(object.getAttribute('Size')) || 3;
+  const drawParam = getEffectiveDrawParam(ofd, layer, object);
+  const fillColor = getObjectFillColor(object, drawParam, {
+    r: 0,
+    g: 0,
+    b: 0,
+    alpha: 1,
+  });
+  const fontName = fontNameForObject(ofd.fonts.get(fontId));
+
+  doc.save().opacity(fillColor.alpha).fillColor(colorToHex(fillColor));
+  for (const code of parseTextCodes(object)) {
+    drawTextCode(doc, code, box, size, fontName);
+  }
+  doc.restore();
+};
+
+const bytesToDataUrl = (bytes: Uint8Array, mimeType: string) => {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return `data:${mimeType};base64,${btoa(binary)}`;
+};
+
+const mimeTypeForMedia = (media: MediaDef) => {
+  const source = `${media.format} ${media.path}`.toLowerCase();
+  if (source.includes('png')) return 'image/png';
+  if (source.includes('jpg') || source.includes('jpeg')) return 'image/jpeg';
+  return 'application/octet-stream';
+};
+
+const drawImageObject = async (
+  doc: PdfKitDocument,
+  ofd: OfdDocument,
+  object: Element
+) => {
+  const box = parseBox(object.getAttribute('Boundary'));
+  const resourceId = object.getAttribute('ResourceID') ?? '';
+  const media = ofd.media.get(resourceId);
+  if (!box || !media) return;
+
+  const entry = ofd.zip.file(media.path);
+  if (!entry) return;
+
+  const bytes = await entry.async('uint8array');
+  doc.image(bytesToDataUrl(bytes, mimeTypeForMedia(media)), toPt(box.x), toPt(box.y), {
+    width: toPt(box.width),
+    height: toPt(box.height),
+  });
+};
+
+const drawLayer = async (
+  doc: PdfKitDocument,
+  ofd: OfdDocument,
+  layer: Element
+) => {
+  for (const object of directChildren(layer)) {
+    if (localName(object) === 'PathObject') {
+      drawPathObject(doc, ofd, layer, object);
+    } else if (localName(object) === 'TextObject') {
+      drawTextObject(doc, ofd, layer, object);
+    } else if (localName(object) === 'ImageObject') {
+      await drawImageObject(doc, ofd, object);
+    }
+  }
+};
+
+const drawPageXml = async (
+  doc: PdfKitDocument,
+  ofd: OfdDocument,
+  pageXml: XMLDocument
+) => {
+  for (const content of directChildren(pageXml.documentElement, 'Content')) {
+    for (const layer of directChildren(content, 'Layer')) {
+      await drawLayer(doc, ofd, layer);
+    }
+  }
+};
+
+const getPageBox = (ofd: OfdDocument, pageXml: XMLDocument) => {
+  const area = firstChild(pageXml.documentElement, 'Area');
+  return parseBox(textOf(area ?? pageXml, 'PhysicalBox')) ?? ofd.pageBox;
+};
+
+const getPageTemplateIds = (pageXml: XMLDocument) =>
+  directChildren(pageXml.documentElement, 'Template')
+    .sort((a, b) =>
+      (a.getAttribute('ZOrder') ?? '').localeCompare(b.getAttribute('ZOrder') ?? '')
+    )
+    .map((element) => element.getAttribute('TemplateID') ?? '')
+    .filter(Boolean);
+
+const renderOfdPageToPdf = async (
+  doc: PdfKitDocument,
+  ofd: OfdDocument,
+  page: PageDef
+) => {
+  const pageXml = await readXmlFromZip(ofd, page.path);
+  const pageBox = getPageBox(ofd, pageXml);
+  doc.addPage({
+    size: [toPt(pageBox.width), toPt(pageBox.height)],
+    margin: 0,
   });
 
-const normalizeSvgPaint = (svg: SVGSVGElement) => {
-  const paintedElements = Array.from(
-    svg.querySelectorAll<SVGElement>('[fill], [stroke]')
-  );
-
-  for (const element of paintedElements) {
-    const fill = element.getAttribute('fill');
-    if (!fill || fill === 'null' || fill === 'undefined') {
-      if (element.tagName.toLowerCase() === 'text') {
-        element.setAttribute('fill', 'rgb(0, 0, 0)');
-      } else if (fill) {
-        element.setAttribute('fill', 'none');
-      }
-    }
-
-    const stroke = element.getAttribute('stroke');
-    if (!stroke || stroke === 'null' || stroke === 'undefined') {
-      if (stroke) element.setAttribute('stroke', 'none');
-    }
-  }
-};
-
-const rasterizeInlineSvgs = async (
-  page: HTMLElement,
-  options: { removeTextSvgs?: boolean } = {}
-) => {
-  const svgs = Array.from(page.querySelectorAll('svg'));
-
-  for (const svg of svgs) {
-    if (options.removeTextSvgs && svg.querySelector('text')) {
-      svg.remove();
-      continue;
-    }
-
-    const rect = svg.getBoundingClientRect();
-    const width = Math.ceil(rect.width || parseFloat(svg.style.width) || 1);
-    const height = Math.ceil(rect.height || parseFloat(svg.style.height) || 1);
-    const clone = svg.cloneNode(true) as SVGSVGElement;
-
-    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-    clone.setAttribute('width', String(width));
-    clone.setAttribute('height', String(height));
-    clone.setAttribute('viewBox', `0 0 ${width} ${height}`);
-    clone.setAttribute(
-      'style',
-      `overflow:visible;width:${width}px;height:${height}px;`
-    );
-    normalizeSvgPaint(clone);
-
-    const image = document.createElement('img');
-    image.src = await rasterizeSvgToPng(clone, width, height);
-    image.setAttribute('style', svg.getAttribute('style') ?? '');
-    image.style.width = `${width}px`;
-    image.style.height = `${height}px`;
-    image.style.objectFit = 'fill';
-
-    svg.replaceWith(image);
-  }
-};
-
-const parseCssColorToHex = (value: string | null) => {
-  if (!value || value === 'null' || value === 'undefined') return '#000000';
-
-  const rgbMatch = value.match(
-    /rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/
-  );
-  if (rgbMatch) {
-    return `#${[rgbMatch[1], rgbMatch[2], rgbMatch[3]]
-      .map((part) =>
-        Math.max(0, Math.min(255, Math.round(Number(part))))
-          .toString(16)
-          .padStart(2, '0')
-      )
-      .join('')}`;
+  for (const templateId of getPageTemplateIds(pageXml)) {
+    const template = ofd.templates.get(templateId);
+    if (!template) continue;
+    await drawPageXml(doc, ofd, await readXmlFromZip(ofd, template.path));
   }
 
-  const hexMatch = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-  if (hexMatch) {
-    return `#${
-      hexMatch[1].length === 3
-        ? hexMatch[1]
-            .split('')
-            .map((char) => char + char)
-            .join('')
-        : hexMatch[1]
-    }`;
-  }
-
-  return '#000000';
+  await drawPageXml(doc, ofd, pageXml);
 };
 
-const getPdfRunFontName = (fontFamily: string, text: string) => {
-  if (/[^\x00-\x7F]/.test(text)) return 'ofd-text';
-  if (/courier/i.test(fontFamily)) return 'Courier';
-  if (/times/i.test(fontFamily)) return 'Times-Roman';
-  return 'Helvetica';
-};
-
-const extractSelectableTextRuns = (
-  page: HTMLElement,
-  pdfPageSize: PdfPageSize
-): SelectableTextRun[] => {
-  const pageRect = page.getBoundingClientRect();
-  const pageWidth = pageRect.width || getElementSize(page).width;
-  const pageHeight = pageRect.height || getElementSize(page).height;
-  const scaleX = pdfPageSize.width / pageWidth;
-  const scaleY = pdfPageSize.height / pageHeight;
-  const textElements = Array.from(
-    page.querySelectorAll<SVGTextElement>('text')
-  );
-
-  return textElements
-    .map((textElement) => {
-      const text = textElement.textContent ?? '';
-      const parentSvg = textElement.closest('svg');
-      if (!text.trim() || !parentSvg) return null;
-
-      const svgRect = parentSvg.getBoundingClientRect();
-      const computedStyle = window.getComputedStyle(textElement);
-      const fontSizePx =
-        parseFloat(computedStyle.fontSize) ||
-        parseFloat(textElement.style.fontSize) ||
-        10;
-      const localX = parseFloat(textElement.getAttribute('x') ?? '0') || 0;
-      const localY = parseFloat(textElement.getAttribute('y') ?? '0') || 0;
-      const xPx = svgRect.left - pageRect.left + localX;
-      const baselineYPx = svgRect.top - pageRect.top + localY;
-      const fill =
-        textElement.getAttribute('fill') ||
-        computedStyle.fill ||
-        computedStyle.color;
-      const targetWidthPx =
-        typeof textElement.getComputedTextLength === 'function'
-          ? textElement.getComputedTextLength()
-          : textElement.getBoundingClientRect().width;
-
-      return {
-        text,
-        x: xPx * scaleX,
-        y: Math.max(0, (baselineYPx - fontSizePx * 0.82) * scaleY),
-        fontSize: fontSizePx * scaleY,
-        fontName: getPdfRunFontName(computedStyle.fontFamily, text),
-        color: parseCssColorToHex(fill),
-        targetWidth: targetWidthPx * scaleX,
-      };
-    })
-    .filter((run): run is SelectableTextRun => Boolean(run));
-};
-
-const loadPdfTextFont = async () => {
-  const fontResponse = await fetch(ofdTextFontUrl);
+const fetchFontBytes = async (url: string) => {
+  const fontResponse = await fetch(url);
   if (!fontResponse.ok) {
     throw new Error('Unable to load OFD PDF text font.');
   }
@@ -518,33 +659,18 @@ const loadPdfTextFont = async () => {
   return new Uint8Array(await fontResponse.arrayBuffer());
 };
 
-const fitTextFontSize = (doc: PdfKitDocument, run: SelectableTextRun) => {
-  if (run.targetWidth <= 0) return run.fontSize;
+const loadPdfTextFonts = async (): Promise<OfdPdfFonts> => {
+  const [regular, light, bold] = await Promise.all([
+    fetchFontBytes(ofdTextFontRegularUrl),
+    fetchFontBytes(ofdTextFontLightUrl),
+    fetchFontBytes(ofdTextFontBoldUrl),
+  ]);
 
-  doc.font(run.fontName);
-  doc.fontSize(run.fontSize);
-  const renderedWidth = doc.widthOfString(run.text);
-  if (renderedWidth <= run.targetWidth || renderedWidth === 0) {
-    return run.fontSize;
-  }
-
-  return Math.max(1, run.fontSize * (run.targetWidth / renderedWidth));
-};
-
-const drawSelectableTextRuns = (
-  doc: PdfKitDocument,
-  textRuns: SelectableTextRun[]
-) => {
-  for (const run of textRuns) {
-    doc
-      .font(run.fontName)
-      .fillColor(run.color)
-      .fontSize(fitTextFontSize(doc, run))
-      .text(run.text, run.x, run.y, { lineBreak: false });
-  }
+  return { bold, light, regular };
 };
 
 const loadPdfKit = async () => {
+  installPdfBrowserShims();
   const [pdfKitModule, blobStreamModule] = await Promise.all([
     import('pdfkit/js/pdfkit.standalone.js'),
     import('blob-stream'),
@@ -556,34 +682,6 @@ const loadPdfKit = async () => {
   };
 };
 
-const addRenderedPageToPdf = async (
-  pdfDoc: PdfKitDocument,
-  page: HTMLElement,
-  pdfPageSize: PdfPageSize,
-  html2canvas: typeof import('html2canvas').default
-) => {
-  const textRuns = extractSelectableTextRuns(page, pdfPageSize);
-  await rasterizeInlineSvgs(page, { removeTextSvgs: true });
-  await waitForRenderAssets(page);
-
-  const canvas = await html2canvas(page, {
-    scale: 2,
-    useCORS: true,
-    allowTaint: true,
-    backgroundColor: '#ffffff',
-  });
-  pdfDoc.addPage({
-    size: [pdfPageSize.width, pdfPageSize.height],
-    margin: 0,
-  });
-  pdfDoc.image(canvas.toDataURL('image/png'), 0, 0, {
-    width: pdfPageSize.width,
-    height: pdfPageSize.height,
-  });
-  pdfDoc.font('ofd-text');
-  drawSelectableTextRuns(pdfDoc, textRuns);
-};
-
 const finishPdfKitDocument = (doc: PdfKitDocument, stream: BlobStream) =>
   new Promise<Blob>((resolve, reject) => {
     stream.on('finish', () => resolve(stream.toBlob('application/pdf')));
@@ -593,12 +691,10 @@ const finishPdfKitDocument = (doc: PdfKitDocument, stream: BlobStream) =>
     doc.end();
   });
 
-const blobToArrayBuffer = (blob: Blob) => blob.arrayBuffer();
-
 const createPdfKitDocument = (
   PDFDocument: PdfKitConstructor,
   blobStream: () => BlobStream,
-  fontBytes: Uint8Array
+  fonts: OfdPdfFonts
 ) => {
   const doc = new PDFDocument({
     autoFirstPage: false,
@@ -606,9 +702,32 @@ const createPdfKitDocument = (
     margin: 0,
   });
   const stream = doc.pipe(blobStream()) as BlobStream;
-  doc.registerFont('ofd-text', fontBytes);
+  doc.registerFont('ofd-text', fonts.regular);
+  doc.registerFont('ofd-text-light', fonts.light);
+  doc.registerFont('ofd-text-bold', fonts.bold);
   return { doc, stream };
 };
+
+const convertSingleOfdFile = async (
+  file: File,
+  PDFDocument: PdfKitConstructor,
+  blobStream: () => BlobStream,
+  fonts: OfdPdfFonts
+) => {
+  const ofd = await parseOfdPackage(file);
+  if (ofd.pages.length === 0) {
+    throw new Error('No pages found in OFD document.');
+  }
+
+  const { doc, stream } = createPdfKitDocument(PDFDocument, blobStream, fonts);
+  for (let i = 0; i < ofd.pages.length; i++) {
+    showLoader(`Rendering page ${i + 1} of ${ofd.pages.length}...`);
+    await renderOfdPageToPdf(doc, ofd, ofd.pages[i]);
+  }
+  return finishPdfKitDocument(doc, stream);
+};
+
+const blobToArrayBuffer = (blob: Blob) => blob.arrayBuffer();
 
 document.addEventListener('DOMContentLoaded', () => {
   const fileInput = document.getElementById('file-input') as HTMLInputElement;
@@ -691,142 +810,66 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      showLoader('Loading OFD engine...');
-      const ofdTools = await loadOfdTools();
-      const { parseOfdDocument, renderOfd } = ofdTools;
+      showLoader('Loading OFD converter...');
+      const { PDFDocument, blobStream } = await loadPdfKit();
+      const fonts = await loadPdfTextFonts();
 
-      // Hidden container for offscreen DOM rendering
-      const container = document.createElement('div');
-      container.id = 'ofd-render-container';
-      container.style.cssText = `position:absolute;left:-10000px;top:0;width:${RENDER_WIDTH}px;background:#fff;pointer-events:none;`;
-      document.body.appendChild(container);
+      if (state.files.length === 1) {
+        const file = state.files[0];
+        showLoader(`Converting ${file.name}...`);
+        const pdfBlob = await convertSingleOfdFile(
+          file,
+          PDFDocument,
+          blobStream,
+          fonts
+        );
+        const fileName = file.name.replace(/\.[^.]+$/, '') + '.pdf';
+        downloadFile(pdfBlob, fileName);
 
-      try {
-        const html2canvas = (await import('html2canvas')).default;
-        const { PDFDocument, blobStream } = await loadPdfKit();
-        const fontBytes = await loadPdfTextFont();
+        hideLoader();
+        showAlert(
+          'Conversion Complete',
+          `Successfully converted ${file.name} to PDF.`,
+          'success',
+          () => resetState()
+        );
+      } else {
+        showLoader('Converting files...');
+        const JSZip = (await import('jszip')).default;
+        const zip = new JSZip();
 
-        if (state.files.length === 1) {
-          const file = state.files[0];
-          showLoader(`Converting ${file.name}...`);
-
-          const ofdObj = await parseOfdFile(file, parseOfdDocument);
-          normalizeDrawParamInheritance(ofdObj);
-
-          const pages = renderOfd(RENDER_WIDTH, ofdObj);
-          if (!pages || pages.length === 0) {
-            throw new Error('No pages found in OFD document.');
-          }
-
-          container.innerHTML = '';
-          container.appendChild(pages[0]);
-          await waitForRenderAssets(pages[0]);
-          const { doc: pdfDoc, stream: pdfStream } = createPdfKitDocument(
+        for (let f = 0; f < state.files.length; f++) {
+          const file = state.files[f];
+          showLoader(`Converting ${f + 1}/${state.files.length}: ${file.name}...`);
+          const baseName = file.name.replace(/\.[^.]+$/, '');
+          const pdfBlob = await convertSingleOfdFile(
+            file,
             PDFDocument,
             blobStream,
-            fontBytes
+            fonts
           );
-
-          for (let i = 0; i < pages.length; i++) {
-            const page = pages[i];
-            const pdfPageSize = getPdfPageSize(ofdObj, page, page);
-            if (i > 0) {
-              container.innerHTML = '';
-              container.appendChild(page);
-              await waitForRenderAssets(page);
-            }
-
-            showLoader(`Rendering page ${i + 1} of ${pages.length}...`);
-            await addRenderedPageToPdf(pdfDoc, page, pdfPageSize, html2canvas);
-          }
-
-          showLoader('Generating PDF...');
-          const pdfBlob = await finishPdfKitDocument(pdfDoc, pdfStream);
-          const fileName = file.name.replace(/\.[^.]+$/, '') + '.pdf';
-          downloadFile(pdfBlob, fileName);
-
-          hideLoader();
-          showAlert(
-            'Conversion Complete',
-            `Successfully converted ${file.name} to PDF.`,
-            'success',
-            () => resetState()
-          );
-        } else {
-          showLoader('Converting files...');
-          const JSZip = (await import('jszip')).default;
-          const zip = new JSZip();
-
-          for (let f = 0; f < state.files.length; f++) {
-            const file = state.files[f];
-            showLoader(
-              `Converting ${f + 1}/${state.files.length}: ${file.name}...`
-            );
-
-            const ofdObj = await parseOfdFile(file, parseOfdDocument);
-            normalizeDrawParamInheritance(ofdObj);
-
-            const pages = renderOfd(RENDER_WIDTH, ofdObj);
-            if (!pages || pages.length === 0) continue;
-
-            container.innerHTML = '';
-            container.appendChild(pages[0]);
-            await waitForRenderAssets(pages[0]);
-            const { doc: pdfDoc, stream: pdfStream } = createPdfKitDocument(
-              PDFDocument,
-              blobStream,
-              fontBytes
-            );
-
-            for (let i = 0; i < pages.length; i++) {
-              const page = pages[i];
-              const pdfPageSize = getPdfPageSize(ofdObj, page, page);
-              if (i > 0) {
-                container.innerHTML = '';
-                container.appendChild(page);
-                await waitForRenderAssets(page);
-              }
-
-              await addRenderedPageToPdf(
-                pdfDoc,
-                page,
-                pdfPageSize,
-                html2canvas
-              );
-            }
-
-            const baseName = file.name.replace(/\.[^.]+$/, '');
-            const pdfOutput = await blobToArrayBuffer(
-              await finishPdfKitDocument(pdfDoc, pdfStream)
-            );
-            zip.file(`${baseName}.pdf`, pdfOutput);
-          }
-
-          const zipBlob = await zip.generateAsync({ type: 'blob' });
-          downloadFile(zipBlob, 'ofd-converted.zip');
-
-          hideLoader();
-          showAlert(
-            'Conversion Complete',
-            `Successfully converted ${state.files.length} OFD file(s) to PDF.`,
-            'success',
-            () => resetState()
-          );
+          zip.file(`${baseName}.pdf`, await blobToArrayBuffer(pdfBlob));
         }
-      } finally {
-        if (container.parentNode) {
-          container.parentNode.removeChild(container);
-        }
+
+        const zipBlob = await zip.generateAsync({ type: 'blob' });
+        downloadFile(zipBlob, 'ofd-converted.zip');
+
+        hideLoader();
+        showAlert(
+          'Conversion Complete',
+          `Successfully converted ${state.files.length} OFD file(s) to PDF.`,
+          'success',
+          () => resetState()
+        );
       }
     } catch (e: unknown) {
       console.error('[OFD2PDF] ERROR:', e);
       hideLoader();
-      // Clean up container on error
-      const leftover = document.getElementById('ofd-render-container');
-      if (leftover) leftover.remove();
       showAlert(
         'Error',
-        `An error occurred during conversion. Error: ${e instanceof Error ? e.message : String(e)}`
+        `An error occurred during conversion. Error: ${
+          e instanceof Error ? e.message : String(e)
+        }`
       );
     }
   };
