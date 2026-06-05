@@ -1153,7 +1153,7 @@
   },
   "ofdToPdf": {
     "name": "OFD to PDF",
-    "subtitle": "Convert OFD (Open Fixed-layout Document) files to PDF format.",
+    "subtitle": "Convert Open Fixed-layout Document (OFD) files to PDF format. Supports multiple files.",
     "acceptedFormats": "OFD files",
     "convertButton": "Convert to PDF"
   }

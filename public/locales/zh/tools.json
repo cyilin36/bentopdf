@@ -1153,9 +1153,9 @@
     "faqPrivacyAnswer": "当然！所有处理都在您的浏览器中进行。您的文件永远不会离开您的设备，确保完全隐私。"
   },
   "ofdToPdf": {
-    "name": "OFD to PDF",
-    "subtitle": "Convert OFD (Open Fixed-layout Document) files to PDF format.",
-    "acceptedFormats": "OFD files",
-    "convertButton": "Convert to PDF"
+    "name": "OFD 转 PDF",
+    "subtitle": "将 Open Fixed-layout Document (OFD) 文件转换为 PDF 格式。支持多个文件。",
+    "acceptedFormats": "OFD 文件",
+    "convertButton": "转换为 PDF"
   }
 }

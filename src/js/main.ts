@@ -264,6 +264,7 @@ const init = async () => {
     'ODG to PDF': 'tools:odgToPdf',
     'ODS to PDF': 'tools:odsToPdf',
     'ODP to PDF': 'tools:odpToPdf',
+    'OFD to PDF': 'tools:ofdToPdf',
     'PUB to PDF': 'tools:pubToPdf',
     'VSD to PDF': 'tools:vsdToPdf',
     'PSD to PDF': 'tools:psdToPdf',

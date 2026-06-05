@@ -392,7 +392,7 @@ const baseCategories = [
         name: 'OFD to PDF',
         icon: 'ph-file-text',
         subtitle:
-          'Convert OFD (Open Fixed-layout Document) files to PDF.',
+          'Convert Open Fixed-layout Document (OFD) files to PDF.',
       },
       {
         href: import.meta.env.BASE_URL + 'pub-to-pdf.html',
