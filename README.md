@@ -93,15 +93,6 @@ docker run -d \
   ghcr.io/cyilin36/bentopdf-simple:latest
 ```
 
-开发分支镜像使用 `edge` tag：
-
-```bash
-docker run -d \
-  --name bentopdf-edge \
-  -p 3000:8080 \
-  ghcr.io/cyilin36/bentopdf-simple:edge
-```
-
 也可以固定版本，例如：
 
 ```bash
@@ -121,7 +112,9 @@ services:
     restart: unless-stopped
 ```
 
-> `main` 分支构建会发布 `edge`；推送 `v*` tag 后会发布 `latest`、带 `v` 的版本号和不带 `v` 的版本号。
+> 发布只由 tag 触发（不再构建 `main` 分支 / `edge`）：
+> - 稳定版 tag（`x.y.z`，如 `v1.2.0`）→ GitHub Release（标记 latest），镜像 `:v1.2.0`、`:1.2.0`、`:latest`
+> - 预发布 tag（`x.y.z-xxx`，如 `v1.2.0-beta.1`）→ GitHub Release 标记 Pre-release，镜像 `:v1.2.0-beta.1`、`:1.2.0-beta.1`、`:pre`，**不覆盖** `:latest`
 
 ### 静态部署
 

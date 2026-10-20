@@ -1,17 +1,17 @@
-name: Build Packages (Full + Simple)
+name: Release
 
+# 只由 tag 触发：
+#   v1.2.0        -> 稳定版：GitHub Release（latest）+ GHCR 镜像 :v1.2.0 / :1.2.0 / :latest
+#   v1.2.0-beta.1 -> 预发布：GitHub Release（Pre-release）+ GHCR 镜像 :v1.2.0-beta.1 / :1.2.0-beta.1 / :pre，不覆盖 latest
 on:
   push:
-    branches:
-      - "main"
     tags:
-      - "v*"
-  workflow_dispatch:
+      - 'v*'
 
 jobs:
-  build-and-release:
+  # 构建 full / simple 两个发行包并创建 GitHub Release
+  release:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
     env:
@@ -23,19 +23,26 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
+
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "预发布版本: ${VERSION}"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "稳定版本: ${VERSION}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run tests
         run: npm run test:run
-
-      - name: Extract version
-        id: version
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Build full distribution
         run: npm run build
@@ -54,283 +61,165 @@ jobs:
           zip -r "../dist-simple-${{ steps.version.outputs.version }}.zip" .
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             dist-${{ steps.version.outputs.version }}.zip
             dist-simple-${{ steps.version.outputs.version }}.zip
           generate_release_notes: true
-          make_latest: true
+          prerelease: ${{ steps.version.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.version.outputs.prerelease == 'false' }}
           draft: false
-          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build each platform natively in parallel, then merge manifests
-  build-amd64:
+  # 分别在 amd64 / arm64 原生 runner 上构建镜像，先推 -amd64 / -arm64 中间 tag
+  docker-amd64:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         mode:
           - name: default
             simple_mode: false
-            suffix: ""
+            suffix: ''
           - name: simple
             simple_mode: true
-            suffix: "-simple"
+            suffix: '-simple'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Resolve version
+        id: version
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version_without_v=${VERSION#v}" >> $GITHUB_OUTPUT
-            echo "is_release=true" >> $GITHUB_OUTPUT
-          else
-            SHORT_SHA=${GITHUB_SHA::7}
-            echo "version=edge" >> $GITHUB_OUTPUT
-            echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "is_release=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build and push amd64 ${{ matrix.mode.name }} (release)
-        if: steps.version.outputs.is_release == 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      - name: Build and push amd64 ${{ matrix.mode.name }}
+        uses: docker/build-push-action@v6
         with:
+          context: .
           push: true
           build-args: |
             SIMPLE_MODE=${{ matrix.mode.simple_mode }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64
           platforms: linux/amd64
-          no-cache: true
-
-      - name: Build and push amd64 ${{ matrix.mode.name }} (edge)
-        if: steps.version.outputs.is_release == 'false'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
-        with:
-          push: true
-          build-args: |
-            SIMPLE_MODE=${{ matrix.mode.simple_mode }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-amd64
-          platforms: linux/amd64
           cache-from: type=gha,scope=amd64-${{ matrix.mode.name }}
           cache-to: type=gha,mode=max,scope=amd64-${{ matrix.mode.name }}
 
-  build-arm64:
-    runs-on: ubuntu-24.04-arm  # Native ARM64 runner
+  docker-arm64:
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         mode:
           - name: default
             simple_mode: false
-            suffix: ""
+            suffix: ''
           - name: simple
             simple_mode: true
-            suffix: "-simple"
+            suffix: '-simple'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Resolve version
+        id: version
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version
-        id: version
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version_without_v=${VERSION#v}" >> $GITHUB_OUTPUT
-            echo "is_release=true" >> $GITHUB_OUTPUT
-          else
-            SHORT_SHA=${GITHUB_SHA::7}
-            echo "version=edge" >> $GITHUB_OUTPUT
-            echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "is_release=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Build and push arm64 ${{ matrix.mode.name }} (release)
-        if: steps.version.outputs.is_release == 'true'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+      - name: Build and push arm64 ${{ matrix.mode.name }}
+        uses: docker/build-push-action@v6
         with:
+          context: .
           push: true
           build-args: |
             SIMPLE_MODE=${{ matrix.mode.simple_mode }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-          platforms: linux/arm64
-          no-cache: true
-
-      - name: Build and push arm64 ${{ matrix.mode.name }} (edge)
-        if: steps.version.outputs.is_release == 'false'
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
-        with:
-          push: true
-          build-args: |
-            SIMPLE_MODE=${{ matrix.mode.simple_mode }}
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-arm64
           platforms: linux/arm64
           cache-from: type=gha,scope=arm64-${{ matrix.mode.name }}
           cache-to: type=gha,mode=max,scope=arm64-${{ matrix.mode.name }}
 
-  # Merge GHCR manifests after both platforms are built
-  merge-manifests-ghcr:
+  # 合并两个架构的 manifest：稳定版覆盖 latest，预发布打 pre（绝不覆盖 latest）
+  publish-manifests:
+    needs: [docker-amd64, docker-arm64]
     runs-on: ubuntu-latest
-    needs: [build-amd64, build-arm64]
-    permissions:
-      packages: write
-    strategy:
-      matrix:
-        mode:
-          - name: default
-            suffix: ""
-          - name: simple
-            suffix: "-simple"
-    steps:
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version
-        id: version
-        run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version_without_v=${VERSION#v}" >> $GITHUB_OUTPUT
-            echo "is_release=true" >> $GITHUB_OUTPUT
-          else
-            SHORT_SHA=${GITHUB_SHA::7}
-            echo "version=edge" >> $GITHUB_OUTPUT
-            echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "is_release=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Create and push GHCR manifest (release)
-        if: steps.version.outputs.is_release == 'true'
-        run: |
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:latest \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }} \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version_without_v }} \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-
-      - name: Create and push GHCR manifest (edge)
-        if: steps.version.outputs.is_release == 'false'
-        run: |
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-arm64
-
-          docker buildx imagetools create -t ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:sha-${{ steps.version.outputs.short_sha }} \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-arm64
-
-  # Copy images from GHCR to DockerHub
-  push-to-dockerhub:
-    runs-on: ubuntu-latest
-    needs: [merge-manifests-ghcr]
-    continue-on-error: true
     permissions:
       contents: read
-      packages: read
+      packages: write
     strategy:
+      fail-fast: false
       matrix:
         mode:
           - name: default
-            suffix: ""
+            suffix: ''
           - name: simple
-            suffix: "-simple"
+            suffix: '-simple'
     steps:
+      - name: Resolve version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to DockerHub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
-
-      - name: Extract version
-        id: version
+      - name: Publish multi-arch manifests
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-            echo "version=${VERSION}" >> $GITHUB_OUTPUT
-            echo "version_without_v=${VERSION#v}" >> $GITHUB_OUTPUT
-            echo "is_release=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          docker buildx imagetools create -t "${IMAGE}:v${VERSION}" \
+            "${IMAGE}:${VERSION}-amd64" "${IMAGE}:${VERSION}-arm64"
+          docker buildx imagetools create -t "${IMAGE}:${VERSION}" \
+            "${IMAGE}:${VERSION}-amd64" "${IMAGE}:${VERSION}-arm64"
+
+          if [ "${PRERELEASE}" = "true" ]; then
+            # 预发布：只额外打 pre 浮动 tag，不碰 latest
+            docker buildx imagetools create -t "${IMAGE}:pre" \
+              "${IMAGE}:${VERSION}-amd64" "${IMAGE}:${VERSION}-arm64"
           else
-            SHORT_SHA=${GITHUB_SHA::7}
-            echo "version=edge" >> $GITHUB_OUTPUT
-            echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
-            echo "is_release=false" >> $GITHUB_OUTPUT
+            # 稳定版：覆盖 latest
+            docker buildx imagetools create -t "${IMAGE}:latest" \
+              "${IMAGE}:${VERSION}-amd64" "${IMAGE}:${VERSION}-arm64"
           fi
-
-      - name: Copy images to DockerHub (release)
-        if: steps.version.outputs.is_release == 'true'
-        run: |
-          docker buildx imagetools create -t bentopdfteam/bentopdf${{ matrix.mode.suffix }}:latest \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-
-          docker buildx imagetools create -t bentopdfteam/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }} \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-
-          docker buildx imagetools create -t bentopdfteam/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version_without_v }} \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:${{ steps.version.outputs.version }}-arm64
-
-      - name: Copy images to DockerHub (edge)
-        if: steps.version.outputs.is_release == 'false'
-        run: |
-          docker buildx imagetools create -t bentopdfteam/bentopdf${{ matrix.mode.suffix }}:edge \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-arm64
-
-          docker buildx imagetools create -t bentopdfteam/bentopdf${{ matrix.mode.suffix }}:sha-${{ steps.version.outputs.short_sha }} \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-amd64 \
-            ghcr.io/${{ github.repository_owner }}/bentopdf${{ matrix.mode.suffix }}:edge-arm64
