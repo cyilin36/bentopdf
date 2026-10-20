@@ -18,7 +18,6 @@
 - 工具列表配置：`src/js/config/tools.ts`
 - 首页搜索映射：`src/js/main.ts`
 - 国际化文案：`public/locales/*/tools.json`
-- OFD 解析试验脚本：`test-ofd-parse.mjs`
 
 ## 技术实现
 
@@ -29,8 +28,6 @@ OFD 转 PDF 当前走纯前端方案：
 - 将 OFD 坐标从毫米转换为 PDF points
 - 使用 `pdfkit` 和 `blob-stream` 在浏览器中生成 PDF
 - 使用 `@embedpdf/fonts-sc` 提供中文字体
-
-> 说明：项目依赖里保留了 `ofd-tools`，但当前页面的核心转换逻辑主要在 `src/js/logic/ofd-to-pdf-page.ts` 中自行解析和渲染 OFD 包。
 
 ## 当前能力边界
 
@@ -72,14 +69,6 @@ npm run build
 ```bash
 npm run test:run
 ```
-
-如果只想快速检查 `ofd-tools` 对测试 OFD 的解析结果，可以使用：
-
-```bash
-node test-ofd-parse.mjs
-```
-
-该脚本默认读取 `public/test.ofd`。
 
 ## 部署
 
