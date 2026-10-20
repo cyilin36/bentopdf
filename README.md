@@ -5,6 +5,7 @@
 原仓库 README 内容不再适合作为本 fork 的项目说明。需要了解 BentoPDF 原始项目、完整功能矩阵、自托管文档或商业授权信息时，请前往上游仓库：
 
 - 上游项目：https://github.com/alam00000/bentopdf
+- 当前同步的上游基线：**v2.8.10**（`upstream/main` @ d6537217）
 
 ## 本 Fork 做了什么
 
@@ -115,8 +116,8 @@ docker run -d \
 也可以固定版本，例如：
 
 ```bash
-docker pull ghcr.io/cyilin36/bentopdf-simple:v2.8.5
-docker pull ghcr.io/cyilin36/bentopdf-simple:2.8.5
+docker pull ghcr.io/cyilin36/bentopdf-simple:v2.8.10
+docker pull ghcr.io/cyilin36/bentopdf-simple:2.8.10
 ```
 
 `docker-compose.yml` 示例：

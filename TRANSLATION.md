@@ -33,6 +33,13 @@ BentoPDF uses **i18next** for internationalization (i18n). Currently supported l
 - **Traditional Chinese (Taiwan)** (`zh-TW`)
 - **Korean** (`ko`)
 - **Russian** (`ru`)
+- **Ukrainian** (`uk`)
+- **Slovak** (`sk`)
+- **Arabic** (`ar`)
+- **Dutch** (`nl`)
+- **Danish** (`da`)
+- **Swedish** (`sv`)
+- **Japanese** (`ja`)
 
 The app automatically detects the language from the URL path:
 
@@ -393,7 +400,7 @@ Some strings contain HTML or special characters:
 
 ```json
 {
-  "faq.analytics.answer": "We care about your privacy. BentoPDF does not track personal information. We use <a href=\"https://simpleanalytics.com\" class=\"text-indigo-400 hover:underline\" target=\"_blank\" rel=\"noopener noreferrer\">Simple Analytics</a> solely to see anonymous visit counts."
+  "faq.analytics.answer": "No. BentoPDF does not track you at all. We do not use cookies, analytics, or any tracking scripts, not even on the live website at bentopdf.com. We never know who you are or what you do with the tools."
 }
 ```
 
@@ -401,7 +408,7 @@ When translating, **keep the HTML tags intact**:
 
 ```json
 {
-  "faq.analytics.answer": "Wir schätzen Ihre Privatsphäre. BentoPDF verfolgt keine persönlichen Informationen. Wir verwenden <a href=\"https://simpleanalytics.com\" class=\"text-indigo-400 hover:underline\" target=\"_blank\" rel=\"noopener noreferrer\">Simple Analytics</a> ausschließlich, um anonyme Besucherzahlen zu sehen."
+  "faq.analytics.answer": "Nein. BentoPDF verfolgt Sie in keiner Weise. Wir verwenden keine Cookies, keine Analysetools und keine Tracking-Skripte – auch nicht auf der Live-Website bentopdf.com. Wir wissen nie, wer Sie sind oder was Sie mit den Tools tun."
 }
 ```
 
@@ -603,8 +610,15 @@ Current translation coverage:
 | Traditional Chinese | `zh-TW` | ✅ Complete    | Community  |
 | Korean              | `ko`    | ✅ Complete    | Community  |
 | Russian             | `ru`    | ✅ Complete    | Community  |
+| Ukrainian           | `uk`    | ✅ Complete    | Community  |
+| Slovak              | `sk`    | ✅ Complete    | Community  |
+| Arabic              | `ar`    | ✅ Complete    | Community  |
+| Dutch               | `nl`    | ✅ Complete    | Community  |
+| Danish              | `da`    | ✅ Complete    | Community  |
+| Swedish             | `sv`    | ✅ Complete    | Community  |
+| Japanese            | `ja`    | ✅ Complete    | Community  |
 | Your Language       | `??`    | 🚧 In Progress | You?       |
 
 ---
 
-**Last Updated**: January 2026
+**Last Updated**: June 2026

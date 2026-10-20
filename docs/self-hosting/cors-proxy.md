@@ -123,8 +123,16 @@ The included Cloudflare Worker has several security measures:
 | **Private IP Blocking** | Blocks IPv4/IPv6 private ranges, link-local, loopback, decimal IPs, and cloud metadata |
 | **Content-Type Safety** | Only returns safe certificate MIME types, blocks upstream content-type injection       |
 | **File Size Limit**     | Streams response with 10MB limit, aborts mid-download if exceeded                      |
-| **Rate Limiting**       | 60 requests per IP per minute (requires KV)                                            |
+| **Rate Limiting**       | 60 requests per minute per IP or IPv6 /64 (requires KV, fails open on KV errors)       |
 | **HMAC Signatures**     | Optional client-side signing (deters casual abuse)                                     |
+
+### DNS rebinding (self-hosting off Cloudflare)
+
+The worker rejects any URL that resolves to a private or internal IP. It can't use a fixed allowlist of hosts, since certificate-chain URLs point to whatever CA issued the cert (FNMT, corporate CAs, and so on), so the destinations aren't known up front. That leaves a small rebinding window: someone running the DNS for their own domain could hand a public IP to the safety check and a private one to the real request a moment later.
+
+On Cloudflare this isn't exploitable — Workers can't reach private IPs or the `169.254.169.254` metadata endpoint, so a rebind lands on nothing. Just don't give the worker a way in: don't attach a Tunnel, Service, or private-network binding (it only needs `RATE_LIMIT_KV`).
+
+If you run this off Cloudflare (workerd, Node, and the like) inside a VPC, the runtime _can_ reach internal IPs. Put an egress firewall in front of it and block the private ranges — `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `127.0.0.0/8`, `169.254.0.0/16`, and their IPv6 equivalents. App code can't enforce that once you're off Cloudflare.
 
 ## Disabling the Proxy
 

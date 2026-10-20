@@ -115,6 +115,7 @@ docker run -d -p 3000:8080 bentopdf:custom
 | `VITE_BRAND_LOGO`                    | Logo path relative to `public/`                                                                                              | `images/favicon-no-bg.svg`                                     |
 | `VITE_FOOTER_TEXT`                   | Custom footer/copyright text                                                                                                 | `© 2026 BentoPDF. All rights reserved.`                        |
 | `DISABLE_TOOLS`                      | Comma-separated tool IDs to hide                                                                                             | _(empty; all tools enabled)_                                   |
+| `DISABLE_GITHUB_STARS`               | Skip the GitHub star-count fetch on page load and drop `api.github.com` from the CSP. Simple Mode builds always skip it.     | `false`                                                        |
 
 WASM module URLs are pre-configured with CDN defaults — all advanced features work out of the box. Override these for air-gapped or self-hosted deployments.
 
@@ -125,10 +126,11 @@ The nginx image ships with an enforcing `Content-Security-Policy` header. The CS
 As a result:
 
 - If you override `VITE_CORS_PROXY_URL` or `VITE_WASM_*_URL` at build time, the CSP permits those origins automatically — no extra config needed.
-- If you configure custom WASM URLs at _runtime_ via the in-app Advanced Settings page, those origins are **not** in the CSP and the browser will block fetches to them. Runtime configuration is intended for experimentation; for permanent custom URLs set the matching `VITE_*` build arg.
-- Air-gapped deployments that override all three `VITE_WASM_*_URL` values also get the public `cdn.jsdelivr.net` removed from CSP (each default is replaced, not appended). Similarly, setting `VITE_CORS_PROXY_URL` replaces the public `bentopdf-cors-proxy.bentopdf.workers.dev` default.
+- For URLs on `cdn.jsdelivr.net`, `script-src` allows only the exact versioned package folder, for example `https://cdn.jsdelivr.net/npm/@bentopdf/pymupdf-wasm@0.11.16/`, not the whole CDN. jsDelivr serves any public npm package or GitHub repository, so allowing the whole host would let any of them run on your instance. URLs on any other host are allowed by origin.
+- If you configure custom WASM URLs at _runtime_ via the in-app Advanced Settings page, those origins are **not** in the CSP and the browser will block fetches to them. This also applies to a different version of the same package on `cdn.jsdelivr.net`, because only the version set at build time is allowed. Runtime configuration is intended for experimentation; for permanent custom URLs set the matching `VITE_*` build arg.
+- Air-gapped deployments that override all three `VITE_WASM_*_URL` values also get those `cdn.jsdelivr.net` package folders removed from CSP (each default is replaced, not appended). The Tesseract OCR defaults on `cdn.jsdelivr.net` stay in the policy until you also set the three `VITE_TESSERACT_*` values. Similarly, setting `VITE_CORS_PROXY_URL` replaces the public `bentopdf-cors-proxy.bentopdf.workers.dev` default.
 
-The CSP includes `'unsafe-eval'` in `script-src` because the LibreOffice WASM runtime (used by Word/Excel/PowerPoint conversion tools) compiles internal dispatch code via `new Function()`. Removing it would break all LibreOffice-backed tools. If you build in `SIMPLE_MODE` (without LibreOffice), you can manually edit the generated `security-headers.conf` to drop `'unsafe-eval'` for a stricter policy.
+The CSP includes `'unsafe-eval'` in `script-src` because the LibreOffice WASM runtime (used by Word/Excel/PowerPoint conversion tools) and the wasm-vips image library (used by PDF to TIFF) compile internal dispatch code via `new Function()`. Removing it would break those tools. If you build in `SIMPLE_MODE` (without LibreOffice) and do not need PDF to TIFF, you can manually edit the generated `security-headers.conf` to drop `'unsafe-eval'` for a stricter policy.
 
 For OCR, leave the `VITE_TESSERACT_*` variables empty to use the default online assets, or set all three together for self-hosted/offline OCR. Partial OCR overrides are rejected because the worker, core runtime, and traineddata directory must match. For fully offline searchable PDF output, also set `VITE_OCR_FONT_BASE_URL` so the OCR text-layer fonts are loaded from your internal server instead of the public Noto font URLs.
 
@@ -262,6 +264,16 @@ You can also disable specific features inside the PDF Editor (e.g., redaction, a
 </details>
 
 Categories are hierarchical — disabling a parent (e.g., `annotation`) disables all its children.
+
+### Disabling the GitHub Star Counter
+
+The navbar shows a live GitHub star count, fetched from `api.github.com` on page load. The only external request that isn't serving a PDF feature. Disable it at build time to remove the fetch code from the bundle and drop `api.github.com` from the Content-Security-Policy:
+
+```bash
+docker build --build-arg DISABLE_GITHUB_STARS=true -t bentopdf .
+```
+
+Simple Mode builds (`bentopdf-simple`) always skip the star counter — this flag is only needed on the Commercial build or custom full builds.
 
 ### Custom WASM URLs (Air-Gapped / Self-Hosted)
 

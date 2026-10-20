@@ -13,13 +13,11 @@
  */
 
 const ALLOWED_PATH_PATTERNS = [
-  /\.crt$/i,
-  /\.cer$/i,
-  /\.pem$/i,
-  /\/certs\//i,
-  /\/ocsp/i,
-  /\/crl/i,
-  /caIssuers/i,
+  /\.(crt|cer|pem|der|p7c|p7b)$/i,
+  /(^|\/)certs(\/|$)/i,
+  /(^|\/)ocsp(\/|$)/i,
+  /(^|\/)crl(\/|$)/i,
+  /(^|\/)caissuers(\/|$)/i,
 ];
 
 const ALLOWED_TSA_HOSTS = new Set([
@@ -48,6 +46,8 @@ const RATE_LIMIT_MAX_REQUESTS = 60;
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
+let warnedNoProxySecret = false;
 
 async function verifySignature(message, signature, secret) {
   try {
@@ -81,46 +81,154 @@ function isAllowedOrigin(origin) {
   return ALLOWED_ORIGINS.includes(origin);
 }
 
+function parseIPv4(address) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
+  if (!match) return null;
+  const octets = match.slice(1).map(Number);
+  if (octets.some((octet) => octet > 255)) return null;
+  return octets.reduce((value, octet) => value * 256 + octet, 0);
+}
+
+function parseIPv6(address) {
+  let text = address.toLowerCase();
+  const embedded = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (embedded) {
+    const ipv4 = parseIPv4(embedded[2]);
+    if (ipv4 === null) return null;
+    text = `${embedded[1]}${Math.floor(ipv4 / 65536).toString(16)}:${(ipv4 % 65536).toString(16)}`;
+  }
+  const sections = text.split('::');
+  if (sections.length > 2) return null;
+  const head = sections[0] ? sections[0].split(':') : [];
+  const tail =
+    sections.length === 2 && sections[1] ? sections[1].split(':') : [];
+  const missing = 8 - head.length - tail.length;
+  if (sections.length === 1 ? missing !== 0 : missing < 1) return null;
+  const groups = [...head, ...Array(missing).fill('0'), ...tail];
+  if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) return null;
+  return groups.map((group) => parseInt(group, 16));
+}
+
+const BLOCKED_IPV4_RANGES = [
+  '0.0.0.0/8',
+  '10.0.0.0/8',
+  '100.64.0.0/10',
+  '127.0.0.0/8',
+  '169.254.0.0/16',
+  '172.16.0.0/12',
+  '192.0.0.0/24',
+  '192.0.2.0/24',
+  '192.168.0.0/16',
+  '198.18.0.0/15',
+  '198.51.100.0/24',
+  '203.0.113.0/24',
+  '224.0.0.0/4',
+  '240.0.0.0/4',
+].map((cidr) => {
+  const [address, prefixLength] = cidr.split('/');
+  return { base: parseIPv4(address), size: 2 ** (32 - Number(prefixLength)) };
+});
+
+const BLOCKED_IPV6_RANGES = [
+  '::/128',
+  '::1/128',
+  '::/96',
+  '::ffff:0:0/96',
+  '64:ff9b::/96',
+  '64:ff9b:1::/48',
+  '100::/64',
+  '2001::/32',
+  '2001:db8::/32',
+  '2002::/16',
+  'fc00::/7',
+  'fe80::/10',
+  'fec0::/10',
+  'ff00::/8',
+].map((cidr) => {
+  const [address, prefixLength] = cidr.split('/');
+  return { groups: parseIPv6(address), prefixLength: Number(prefixLength) };
+});
+
+function isBlockedIPv4(value) {
+  return BLOCKED_IPV4_RANGES.some(
+    ({ base, size }) => value >= base && value < base + size
+  );
+}
+
+function isBlockedIPv6(groups) {
+  return BLOCKED_IPV6_RANGES.some((range) =>
+    range.groups.every((group, index) => {
+      const bitsInGroup = Math.min(
+        16,
+        Math.max(0, range.prefixLength - index * 16)
+      );
+      const groupMask = (0xffff << (16 - bitsInGroup)) & 0xffff;
+      return (groups[index] & groupMask) === (group & groupMask);
+    })
+  );
+}
+
+function isBlockedIp(address) {
+  const ipv4 = parseIPv4(address);
+  if (ipv4 !== null) return isBlockedIPv4(ipv4);
+  const ipv6Groups = parseIPv6(address);
+  if (ipv6Groups !== null) return isBlockedIPv6(ipv6Groups);
+  return true;
+}
+
+function isIpLiteral(host) {
+  return /^[\d.]+$/.test(host) || host.includes(':');
+}
+
+function getRateLimitKey(ip) {
+  const ipv6Groups = ip.includes(':') ? parseIPv6(ip) : null;
+  if (!ipv6Groups) return ip;
+  return `${ipv6Groups
+    .slice(0, 4)
+    .map((group) => group.toString(16))
+    .join(':')}::/64`;
+}
+
 function isPrivateOrReservedHost(hostname) {
-  if (
-    /^10\./.test(hostname) ||
-    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname) ||
-    /^192\.168\./.test(hostname) ||
-    /^169\.254\./.test(hostname) || // link-local (cloud metadata)
-    /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(hostname) || // CGNAT
-    /^127\./.test(hostname) ||
-    /^0\./.test(hostname)
-  ) {
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
+
+  if (['localhost', 'localhost.localdomain'].includes(host)) {
     return true;
   }
 
-  if (/^\d+$/.test(hostname)) {
-    return true;
-  }
+  return isIpLiteral(host) && isBlockedIp(host);
+}
 
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (
-    lower === '::1' ||
-    lower.startsWith('::ffff:') ||
-    lower.startsWith('fe80') ||
-    lower.startsWith('fc') ||
-    lower.startsWith('fd') ||
-    lower.startsWith('ff')
-  ) {
-    return true;
+async function hostnameResolvesToPrivate(hostname) {
+  const clean = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
+  if (isPrivateOrReservedHost(clean)) return true;
+  if (isIpLiteral(clean)) return false;
+  const ips = [];
+  for (const type of ['A', 'AAAA']) {
+    try {
+      const res = await fetch(
+        `https://1.1.1.1/dns-query?name=${encodeURIComponent(clean)}&type=${type}`,
+        { headers: { accept: 'application/dns-json' } }
+      );
+      if (!res.ok) return true;
+      const data = await res.json();
+      for (const ans of data.Answer || []) {
+        if (ans && (ans.type === 1 || ans.type === 28) && ans.data) {
+          ips.push(String(ans.data));
+        }
+      }
+    } catch {
+      return true;
+    }
   }
-
-  const blockedNames = [
-    'localhost',
-    'localhost.localdomain',
-    '0.0.0.0',
-    '[::1]',
-  ];
-  if (blockedNames.includes(hostname.toLowerCase())) {
-    return true;
-  }
-
-  return false;
+  if (ips.length === 0) return true;
+  return ips.some((ip) => isBlockedIp(ip));
 }
 
 function isValidCertificateUrl(urlString) {
@@ -181,7 +289,7 @@ function handleOptions(request) {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     const origin = request.headers.get('Origin');
 
@@ -190,6 +298,10 @@ export default {
     }
 
     // NOTE: If you are selfhosting this proxy, you can remove this check, or can set it to only accept requests from your own domain
+    // SECURITY: The Origin allow-list and the optional PROXY_SECRET HMAC are anti-abuse controls, NOT a security boundary — the Origin
+    // header is forgeable by non-browser clients and the HMAC secret ships in the public client bundle. The real SSRF defense is the
+    // private/reserved-IP resolution check (hostnameResolvesToPrivate). Deployments running this off Cloudflare cannot fully close the
+    // DNS-rebinding gap in code and MUST add network egress filtering (see docs/self-hosting/cors-proxy.md).
     if (!isAllowedOrigin(origin)) {
       return new Response(
         JSON.stringify({
@@ -293,7 +405,8 @@ export default {
       const now = Date.now();
       if (
         isNaN(requestTime) ||
-        Math.abs(now - requestTime) > MAX_TIMESTAMP_AGE_MS
+        requestTime > now + 60000 ||
+        now - requestTime > MAX_TIMESTAMP_AGE_MS
       ) {
         return new Response(
           JSON.stringify({
@@ -332,61 +445,99 @@ export default {
           }
         );
       }
+    } else if (!warnedNoProxySecret) {
+      warnedNoProxySecret = true;
+      console.warn(
+        '[CORS Proxy] PROXY_SECRET is not set — request signatures are not verified, so the proxy is callable by any client that can ' +
+          'send an allowed Origin header. Set PROXY_SECRET to deter casual abuse (note: it ships in the public client bundle, so it is ' +
+          'not a real authentication boundary), and add network egress filtering if running off Cloudflare.'
+      );
     }
 
     const clientIP = request.headers.get('CF-Connecting-IP') || 'unknown';
-    const rateLimitKey = `ratelimit:${clientIP}`;
+    const rateLimitKey = `ratelimit:${getRateLimitKey(clientIP)}`;
     const now = Date.now();
 
     if (env.RATE_LIMIT_KV) {
-      const rateLimitData = await env.RATE_LIMIT_KV.get(rateLimitKey, {
-        type: 'json',
-      });
-      const requests = rateLimitData?.requests || [];
+      try {
+        const rateLimitData = await env.RATE_LIMIT_KV.get(rateLimitKey, {
+          type: 'json',
+        });
+        const requests = rateLimitData?.requests || [];
 
-      const recentRequests = requests.filter(
-        (t) => now - t < RATE_LIMIT_WINDOW_MS
-      );
+        const recentRequests = requests.filter(
+          (t) => now - t < RATE_LIMIT_WINDOW_MS
+        );
 
-      if (recentRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
-        return new Response(
-          JSON.stringify({
-            error: 'Rate limit exceeded',
-            message: `Maximum ${RATE_LIMIT_MAX_REQUESTS} requests per minute. Please try again later.`,
-            retryAfter: Math.ceil(
-              (recentRequests[0] + RATE_LIMIT_WINDOW_MS - now) / 1000
-            ),
-          }),
-          {
-            status: 429,
-            headers: {
-              ...corsHeaders(origin),
-              'Content-Type': 'application/json',
-              'Retry-After': Math.ceil(
+        if (recentRequests.length >= RATE_LIMIT_MAX_REQUESTS) {
+          return new Response(
+            JSON.stringify({
+              error: 'Rate limit exceeded',
+              message: `Maximum ${RATE_LIMIT_MAX_REQUESTS} requests per minute. Please try again later.`,
+              retryAfter: Math.ceil(
                 (recentRequests[0] + RATE_LIMIT_WINDOW_MS - now) / 1000
-              ).toString(),
-            },
+              ),
+            }),
+            {
+              status: 429,
+              headers: {
+                ...corsHeaders(origin),
+                'Content-Type': 'application/json',
+                'Retry-After': Math.ceil(
+                  (recentRequests[0] + RATE_LIMIT_WINDOW_MS - now) / 1000
+                ).toString(),
+              },
+            }
+          );
+        }
+
+        recentRequests.push(now);
+        await env.RATE_LIMIT_KV.put(
+          rateLimitKey,
+          JSON.stringify({ requests: recentRequests }),
+          {
+            expirationTtl: 120,
           }
         );
+      } catch (error) {
+        console.error(
+          '[CORS Proxy] Rate limit KV error, allowing request:',
+          error
+        );
       }
-
-      recentRequests.push(now);
-      await env.RATE_LIMIT_KV.put(
-        rateLimitKey,
-        JSON.stringify({ requests: recentRequests }),
-        {
-          expirationTtl: 120,
-        }
-      );
     } else {
       console.warn(
         '[CORS Proxy] RATE_LIMIT_KV not configured — rate limiting is disabled'
       );
     }
 
+    let targetHostname;
+    try {
+      targetHostname = new URL(targetUrl).hostname;
+    } catch {
+      targetHostname = '';
+    }
+    if (!targetHostname || (await hostnameResolvesToPrivate(targetHostname))) {
+      return new Response(
+        JSON.stringify({
+          error: 'Forbidden destination',
+          message: 'The requested host is not permitted',
+        }),
+        {
+          status: 403,
+          headers: {
+            ...corsHeaders(origin),
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+    }
+
     try {
       const upstreamInit = {
         method: request.method,
+        redirect: 'manual',
+        signal: AbortSignal.timeout(10000),
         headers: {
           'User-Agent': 'BentoPDF-CertProxy/1.0',
         },
@@ -398,6 +549,22 @@ export default {
       }
 
       const response = await fetch(targetUrl, upstreamInit);
+
+      if (response.status >= 300 && response.status < 400) {
+        return new Response(
+          JSON.stringify({
+            error: 'Redirect blocked',
+            message: 'Upstream redirects are not allowed',
+          }),
+          {
+            status: 502,
+            headers: {
+              ...corsHeaders(origin),
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+      }
 
       if (!response.ok) {
         return new Response(
@@ -480,7 +647,7 @@ export default {
             response.headers.get('Content-Type')
           ),
           'Content-Length': totalSize.toString(),
-          'Cache-Control': 'public, max-age=86400',
+          'Cache-Control': 'no-store',
           'X-Content-Type-Options': 'nosniff',
         },
       });

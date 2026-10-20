@@ -1,3 +1,5 @@
+import './utils/map-upsert-polyfill.js';
+import './utils/setup-pdf-worker.js';
 import { categories } from './config/tools.js';
 import { dom, switchView, hideAlert } from './ui.js';
 import { ShortcutsManager } from './logic/shortcuts.js';
@@ -22,6 +24,12 @@ import {
   isToolDisabled,
   isCurrentPageDisabled,
 } from './utils/disabled-tools.js';
+import {
+  getStoredItem,
+  setStoredItem,
+  removeStoredItem,
+} from './utils/safe-storage.js';
+import { sanitizeTranslationHtml } from './utils/translation-html.js';
 declare const __BRAND_NAME__: string;
 
 const init = async () => {
@@ -41,18 +49,14 @@ const init = async () => {
     main.innerHTML = `
       <div class="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
         <i class="ph ph-prohibit text-6xl text-gray-500 mb-4"></i>
-        <h1 class="text-2xl font-bold text-white mb-2">${heading}</h1>
-        <p class="text-gray-400 mb-6">${message}</p>
-        <a href="${import.meta.env.BASE_URL}" class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition">${backHome}</a>
+        <h1 class="text-2xl font-bold text-white mb-2">${sanitizeTranslationHtml(heading)}</h1>
+        <p class="text-gray-400 mb-6">${sanitizeTranslationHtml(message)}</p>
+        <a href="${import.meta.env.BASE_URL}" class="px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition">${sanitizeTranslationHtml(backHome)}</a>
       </div>
     `;
     return;
   }
 
-  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-    'pdfjs-dist/build/pdf.worker.min.mjs',
-    import.meta.url
-  ).toString();
   if (__SIMPLE_MODE__) {
     const hideBrandingSections = () => {
       const heroSection = document.getElementById('hero-section');
@@ -171,6 +175,7 @@ const init = async () => {
     'Split PDF': 'tools:splitPdf',
     'Compress PDF': 'tools:compressPdf',
     'PDF Editor': 'tools:pdfEditor',
+    'Edit PDF Text': 'tools:editPdfText',
     'JPG to PDF': 'tools:jpgToPdf',
     'Sign PDF': 'tools:signPdf',
     'Crop PDF': 'tools:cropPdf',
@@ -211,6 +216,7 @@ const init = async () => {
     'PDF to JSON': 'tools:pdfToJson',
     'OCR PDF': 'tools:ocrPdf',
     'Alternate & Mix Pages': 'tools:alternateMerge',
+    'Duplex Collate': 'tools:duplexCollate',
     'PDF Overlay': 'tools:pdfOverlay',
     'Organize & Duplicate': 'tools:duplicateOrganize',
     'Add Attachments': 'tools:addAttachments',
@@ -291,17 +297,14 @@ const init = async () => {
 
     let collapsedCategories: string[] = [];
     try {
-      const stored = localStorage.getItem('collapsedCategories');
+      const stored = getStoredItem('collapsedCategories');
       if (stored) collapsedCategories = JSON.parse(stored);
     } catch {
-      localStorage.removeItem('collapsedCategories');
+      removeStoredItem('collapsedCategories');
     }
 
     function saveCollapsedCategories() {
-      localStorage.setItem(
-        'collapsedCategories',
-        JSON.stringify(collapsedCategories)
-      );
+      setStoredItem('collapsedCategories', JSON.stringify(collapsedCategories));
     }
 
     const filteredCategories = categories
@@ -313,7 +316,11 @@ const init = async () => {
 
     filteredCategories.forEach((category) => {
       const categoryGroup = document.createElement('div');
-      categoryGroup.className = 'category-group col-span-full';
+      const categorySlug = category.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '');
+      categoryGroup.className = `category-group col-span-full is-cat-${categorySlug}`;
 
       const header = document.createElement('button');
       header.className = 'category-header';
@@ -538,6 +545,49 @@ const init = async () => {
     });
   }
 
+  const faqDetails =
+    document.querySelectorAll<HTMLDetailsElement>('details.faq-d');
+  if (
+    faqDetails.length > 0 &&
+    !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  ) {
+    faqDetails.forEach((detail) => {
+      const summary = detail.querySelector('summary');
+      const body = detail.querySelector<HTMLElement>('.faq-d-a');
+      if (!summary || !body) return;
+
+      let animation: Animation | null = null;
+
+      summary.addEventListener('click', (event) => {
+        event.preventDefault();
+        animation?.cancel();
+
+        const wasOpen = detail.open;
+        if (!wasOpen) detail.open = true;
+
+        const fullHeight = `${body.scrollHeight}px`;
+        const fullPadding = window.getComputedStyle(body).paddingBottom;
+        const collapsed = { height: '0px', paddingBottom: '0px', opacity: 0 };
+        const expanded = {
+          height: fullHeight,
+          paddingBottom: fullPadding,
+          opacity: 1,
+        };
+
+        body.style.overflow = 'hidden';
+        animation = body.animate(
+          wasOpen ? [expanded, collapsed] : [collapsed, expanded],
+          { duration: 280, easing: 'cubic-bezier(0.2, 0.7, 0.2, 1)' }
+        );
+        animation.onfinish = () => {
+          if (wasOpen) detail.open = false;
+          body.style.overflow = '';
+          animation = null;
+        };
+      });
+    });
+  }
+
   createIcons({ icons });
   console.log('Please share our tool and share the love!');
 
@@ -546,7 +596,11 @@ const init = async () => {
     document.getElementById('github-stars-mobile'),
   ];
 
-  if (githubStarsElements.some((el) => el) && !__SIMPLE_MODE__) {
+  if (
+    githubStarsElements.some((el) => el) &&
+    !__SIMPLE_MODE__ &&
+    !__DISABLE_GITHUB_STARS__
+  ) {
     fetch('https://api.github.com/repos/alam00000/bentopdf')
       .then((response) => response.json())
       .then((data) => {
@@ -612,7 +666,7 @@ const init = async () => {
   ) as HTMLInputElement;
   const toolInterface = document.getElementById('tool-interface');
 
-  const savedFullWidth = localStorage.getItem('fullWidthMode') !== 'false';
+  const savedFullWidth = getStoredItem('fullWidthMode') !== 'false';
   if (fullWidthToggle) {
     fullWidthToggle.checked = savedFullWidth;
     applyFullWidthMode(savedFullWidth);
@@ -649,7 +703,7 @@ const init = async () => {
   if (fullWidthToggle) {
     fullWidthToggle.addEventListener('change', (e) => {
       const enabled = (e.target as HTMLInputElement).checked;
-      localStorage.setItem('fullWidthMode', enabled.toString());
+      setStoredItem('fullWidthMode', enabled.toString());
       applyFullWidthMode(enabled);
     });
   }
@@ -658,7 +712,7 @@ const init = async () => {
     'compact-mode-toggle'
   ) as HTMLInputElement;
 
-  const savedCompactMode = localStorage.getItem('compactMode') === 'true';
+  const savedCompactMode = getStoredItem('compactMode') === 'true';
   if (compactModeToggle) {
     compactModeToggle.checked = savedCompactMode;
   }
@@ -678,7 +732,7 @@ const init = async () => {
   if (compactModeToggle) {
     compactModeToggle.addEventListener('change', (e) => {
       const enabled = (e.target as HTMLInputElement).checked;
-      localStorage.setItem('compactMode', enabled.toString());
+      setStoredItem('compactMode', enabled.toString());
       applyCompactMode(enabled);
     });
   }
@@ -846,7 +900,7 @@ const init = async () => {
       }
 
       dom.warningTitle.textContent = title;
-      dom.warningMessage.innerHTML = message;
+      dom.warningMessage.innerHTML = sanitizeTranslationHtml(message);
       dom.warningModal.classList.remove('hidden');
       dom.warningModal.classList.add('flex');
 

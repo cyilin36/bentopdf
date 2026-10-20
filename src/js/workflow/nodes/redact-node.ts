@@ -6,6 +6,7 @@ import { requirePdfInput, processBatch } from '../types';
 import { loadPyMuPDF } from '../../utils/pymupdf-loader.js';
 import { hexToRgb } from '../../utils/helpers.js';
 import { loadPdfDocument } from '../../utils/load-pdf-document.js';
+import { redactDocumentData } from '../../utils/redact-document-data.js';
 import { wfError } from '../errors';
 
 export class RedactNode extends BaseWorkflowNode {
@@ -67,7 +68,9 @@ export class RedactNode extends BaseWorkflowNode {
     const pdfInputs = requirePdfInput(inputs, 'Redact');
 
     const mode = this.getText('redactMode', 'text');
-    const searchText = this.getText('text', '');
+    const searchText = this.getText('text', '')
+      .replace(/\\/g, '')
+      .replace(/\p{Cc}/gu, '');
     const fill = hexToRgb(this.getText('fillColor', '#000000'));
 
     if (mode === 'text' && !searchText) {
@@ -104,8 +107,13 @@ export class RedactNode extends BaseWorkflowNode {
           }
         }
 
-        const resultBytes = new Uint8Array(doc.save());
+        const redactedBytes = new Uint8Array(doc.save());
         doc.close();
+
+        const resultBytes = await redactDocumentData(
+          redactedBytes,
+          mode === 'text' ? [searchText] : []
+        );
 
         const resultDoc = await loadPdfDocument(resultBytes);
 
