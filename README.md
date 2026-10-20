@@ -105,8 +105,8 @@ docker run -d \
 也可以固定版本，例如：
 
 ```bash
-docker pull ghcr.io/cyilin36/bentopdf-simple:v2.8.10
-docker pull ghcr.io/cyilin36/bentopdf-simple:2.8.10
+docker pull ghcr.io/cyilin36/bentopdf-simple:v1.2.0
+docker pull ghcr.io/cyilin36/bentopdf-simple:1.2.0
 ```
 
 `docker-compose.yml` 示例：
